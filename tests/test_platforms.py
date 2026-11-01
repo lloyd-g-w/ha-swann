@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from homeassistant.components.camera import async_get_stream_source
+from homeassistant.components.camera.const import DATA_COMPONENT as CAMERA_DATA_KEY
+from homeassistant.components.stream import (
+    CONF_RTSP_TRANSPORT as STREAM_CONF_RTSP_TRANSPORT,
+)
 from homeassistant.const import ATTR_ENTITY_ID, STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.swann.api import ChannelEvents
-from custom_components.swann.const import CONF_STREAM_TYPE
+from custom_components.swann.const import CONF_RTSP_TRANSPORT, CONF_STREAM_TYPE
 
 from .conftest import FakeSwannClient
 
@@ -81,3 +85,26 @@ async def test_motion_detection_switch(
     await _switch(hass, "turn_off", ent)
     assert fake_client.channels[2].motion_detection_enabled is False
     assert hass.states.get(ent).state == STATE_OFF
+
+
+@pytest.mark.parametrize(
+    ("options", "transport"),
+    [({}, "tcp"), ({CONF_RTSP_TRANSPORT: "udp"}, "udp")],
+)
+async def test_camera_rtsp_transport(
+    hass: HomeAssistant,
+    fake_client: FakeSwannClient,
+    config_entry: MockConfigEntry,
+    options: dict,
+    transport: str,
+):
+    entry = MockConfigEntry(
+        domain=config_entry.domain,
+        unique_id=config_entry.unique_id,
+        data=dict(config_entry.data),
+        options=options,
+    )
+    await _setup(hass, entry)
+    camera = hass.data[CAMERA_DATA_KEY].get_entity("camera.front_door")
+    # HA's stream worker passes this to ffmpeg as rtsp_transport.
+    assert camera.stream_options == {STREAM_CONF_RTSP_TRANSPORT: transport}

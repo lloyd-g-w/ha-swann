@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 import copy
+import json
 from unittest.mock import patch
 
 from aiohttp.test_utils import TestServer
@@ -16,10 +18,15 @@ from homeassistant.const import (
     STATE_ON,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.swann import coordinator as coordinator_mod, helpers
+from custom_components.swann import (
+    coordinator as coordinator_mod,
+    diagnostics,
+    helpers,
+)
 from custom_components.swann.api import SwannClient, SwannConnectionError
 from custom_components.swann.const import CONF_USE_HTTPS
 
@@ -245,3 +252,117 @@ async def test_setup_survives_cloud_settings_failing(
     assert entry.state is ConfigEntryState.LOADED
     assert hass.states.get("camera.driveway") is not None
     assert hass.states.get(CLOUD_SWITCH).state == "unavailable"
+
+
+async def test_channel_devices_linked_without_via_device(
+    hass: HomeAssistant,
+    mock_nvr: MockNVR,
+    entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Newer HA rejects via_device on cameras (entities failed to add).
+    await _setup(hass, entry)
+    assert "via_device" not in caplog.text
+    registry = dr.async_get(hass)
+    nvr = registry.async_get_device_by_identifier(
+        ("swann", "N8X1R2A3B4C5D6E7"), entry.entry_id
+    )
+    assert nvr is not None
+    channels = [
+        d
+        for d in dr.async_entries_for_config_entry(registry, entry.entry_id)
+        if d.id != nvr.id
+    ]
+    assert len(channels) == 4
+    assert all(d.via_device_id == nvr.id for d in channels)
+    assert {d.name for d in channels} >= {"Driveway", "Garage"}
+    ent = er.async_get(hass).async_get("camera.driveway")
+    assert registry.async_get(ent.device_id).via_device_id == nvr.id
+
+
+@pytest.mark.event_loop_enabled
+async def test_heartbeat_loop_keeps_session(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    with (
+        patch.object(coordinator_mod, "HEARTBEAT_INTERVAL", 0.01),
+        patch.object(coordinator_mod, "EVENT_MIN_INTERVAL", 0.05),
+    ):
+        await _setup(hass, entry)
+        for _ in range(200):
+            if mock_nvr.heartbeats >= 3:
+                break
+            await asyncio.sleep(0.01)
+        assert mock_nvr.heartbeats >= 3
+        assert mock_nvr.logins == 1
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+    count = mock_nvr.heartbeats
+    await asyncio.sleep(0.05)
+    assert mock_nvr.heartbeats == count  # stopped on unload
+
+
+async def test_heartbeat_recovers_after_no_heartbeat(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    now = [1000.0]
+    mock_nvr.clock = lambda: now[0]
+    mock_nvr.heartbeat_timeout = 15
+    await _setup(hass, entry)
+    coordinator = entry.runtime_data.coordinator
+    now[0] += 30  # session dropped: no heartbeat in time
+    await coordinator.async_send_heartbeat()
+    assert mock_nvr.logins == 2
+    assert mock_nvr.heartbeats == 1
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success
+    assert hass.states.get("camera.driveway").state != "unavailable"
+
+
+async def test_diagnostics(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup(hass, entry)
+    mock_nvr.drop["SystemInfo/Base/Get"] = -1  # one call failing
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    text = json.dumps(diag)
+    for secret in (
+        "N8X1R2A3B4C5D6E7",
+        "00:23:63:AA:BB:CC",
+        "192.168.86.152",
+        "SWANN0123456789",
+        USER_INPUT["password"],
+        "127.0.0.1",
+        USER_INPUT["host"],
+    ):
+        assert secret not in text, secret
+    assert diag["version"]
+    assert diag["coordinator"]["last_update_success"] is True
+    assert diag["coordinator"]["event_loop_running"] is False
+    raw = diag["raw"]
+    assert raw["system_info"]["ok"] is False
+    assert "SystemInfo/Base/Get" in raw["system_info"]["error"]
+    assert raw["device_info"]["data"]["model"] == "NVW-MR4K"
+    assert raw["channel_info"]["data"]["channel_param"]["items"][0]["channel_name"]
+    assert raw["motion_config"]["ok"] is True
+    assert raw["event_check"]["ok"] is True
+    assert raw["cloud_range"]["NetworkConfig/P2P"] == "supported"
+    assert "NetworkConfig/DDNS" not in raw["cloud_range"]  # option off
+    assert diag["channels"][0]["abilities"] == [
+        "md",
+        "pd",
+        "vd",
+        "Floodlight",
+        "AudioAlarm",
+        "Talk",
+    ]
+    assert diag["data"]["password"] == "**REDACTED**"
+
+
+async def test_diagnostics_when_not_loaded(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    assert diag["raw"]["device_info"]["ok"] is True
+    assert "coordinator" not in diag
+    assert mock_nvr.logouts == 1  # temporary client closed

@@ -7,7 +7,12 @@ from homeassistant.components.ffmpeg import async_get_image
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import CONF_STREAM_TYPE, DEFAULT_STREAM_TYPE
+from .const import (
+    CONF_RTSP_TRANSPORT,
+    CONF_STREAM_TYPE,
+    DEFAULT_RTSP_TRANSPORT,
+    DEFAULT_STREAM_TYPE,
+)
 from .coordinator import SwannConfigEntry, SwannCoordinator
 from .entity import SwannChannelEntity
 
@@ -22,8 +27,10 @@ async def async_setup_entry(
     """Set up cameras."""
     coordinator = entry.runtime_data.coordinator
     stream = entry.options.get(CONF_STREAM_TYPE, DEFAULT_STREAM_TYPE)
+    transport = entry.options.get(CONF_RTSP_TRANSPORT, DEFAULT_RTSP_TRANSPORT)
     async_add_entities(
-        SwannCamera(coordinator, ch, stream) for ch in coordinator.data.channels
+        SwannCamera(coordinator, ch, stream, transport)
+        for ch in coordinator.data.channels
     )
 
 
@@ -34,12 +41,18 @@ class SwannCamera(SwannChannelEntity, Camera):
     _attr_supported_features = CameraEntityFeature.STREAM
 
     def __init__(
-        self, coordinator: SwannCoordinator, channel: int, stream: str
+        self,
+        coordinator: SwannCoordinator,
+        channel: int,
+        stream: str,
+        transport: str = DEFAULT_RTSP_TRANSPORT,
     ) -> None:
         """Initialize the camera."""
         SwannChannelEntity.__init__(self, coordinator, channel, "camera")
         Camera.__init__(self)
         self._stream_type = stream
+        # Read by HA's stream worker (PyAV/ffmpeg rtsp_transport option).
+        self.stream_options[CONF_RTSP_TRANSPORT] = transport
 
     async def stream_source(self) -> str | None:
         """Return the RTSP URL."""

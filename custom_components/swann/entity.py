@@ -31,6 +31,11 @@ class SwannEntity(CoordinatorEntity[SwannCoordinator]):
         )
 
 
+def channel_identifier(serial: str, channel: int) -> str:
+    """Return the device identifier of a channel."""
+    return f"{serial}_ch{channel:02d}"
+
+
 class SwannChannelEntity(CoordinatorEntity[SwannCoordinator]):
     """Entity attached to a camera channel device (via the NVR)."""
 
@@ -41,13 +46,12 @@ class SwannChannelEntity(CoordinatorEntity[SwannCoordinator]):
         super().__init__(coordinator)
         self.channel_number = channel
         serial = coordinator.device.serial
-        ch = coordinator.data.channels.get(channel)
         self._attr_unique_id = f"{serial}_ch{channel:02d}_{key}"
+        # The channel device itself (with its link to the NVR via
+        # via_device_id) is registered in async_setup_entry; entities only
+        # reference it, since via_device in DeviceInfo is deprecated.
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"{serial}_ch{channel:02d}")},
-            manufacturer="Swann",
-            name=ch.name if ch and ch.name else f"Channel {channel}",
-            via_device=(DOMAIN, serial),
+            identifiers={(DOMAIN, channel_identifier(serial, channel))}
         )
 
     @property

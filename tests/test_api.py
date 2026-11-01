@@ -180,6 +180,32 @@ async def test_login_at_other_does_not_fight(
     assert mock.logins == 2
 
 
+async def test_heartbeat_keeps_session_alive(
+    client: SwannClient, mock: MockNVR, clock: FakeClock
+) -> None:
+    mock.clock = clock
+    mock.heartbeat_timeout = 15
+    await client.async_login()
+    for _ in range(5):
+        clock.now += 10
+        await client.async_heartbeat()
+    assert len(await client.async_get_channels()) == 4
+    assert mock.logins == 1
+    assert mock.heartbeats == 5
+
+
+async def test_no_heartbeat_relogs_in(
+    client: SwannClient, mock: MockNVR, clock: FakeClock
+) -> None:
+    # Seen on an NVW-MR4K: "HTTP 400, error_code=no_heartbeat".
+    mock.clock = clock
+    mock.heartbeat_timeout = 15
+    await client.async_login()
+    clock.now += 30
+    assert len(await client.async_get_channels()) == 4
+    assert mock.logins == 2
+
+
 async def test_close_logs_out(
     client: SwannClient, mock: MockNVR, session: aiohttp.ClientSession
 ) -> None:

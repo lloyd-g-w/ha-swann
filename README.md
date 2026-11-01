@@ -33,7 +33,8 @@ Requires Home Assistant 2026.10 or newer.
 The NVR is identified by its serial number, so it can only be added once.
 
 **Options:** camera stream (main = high resolution, sub = low resolution),
-polling interval (seconds), and *Also manage DDNS and cloud upload servers
+RTSP transport for Home Assistant's stream worker (TCP by default; try UDP if
+live view times out), polling interval (seconds), and *Also manage DDNS and cloud upload servers
 (experimental)*, off by default (see below).
 
 ## Features
@@ -124,6 +125,16 @@ on your router.
    Also say whether the device name, model, serial and channel names look right,
    and how quickly motion/person sensors react. Check the logs for passwords
    before posting them anywhere public.
+
+## Troubleshooting
+
+- **Download diagnostics:** *Settings → Devices & services → Swann NVR → ⋮ →
+  Download diagnostics*. The file holds the integration's state plus fresh raw
+  responses from the NVR (device info, channels, motion config, one event
+  check, which cloud pages exist), with passwords, serials, MAC/IP addresses
+  and IDs redacted. It works even if setup keeps failing. Attach it to an
+  issue.
+- **Live view times out:** set *RTSP transport* to UDP in the options.
 
 ## Development
 

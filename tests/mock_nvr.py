@@ -8,11 +8,13 @@ with a queue of responses, and error injection.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import copy
 import hashlib
 import json
 from pathlib import Path
 import re
+import time
 from typing import Any
 
 from aiohttp import web
@@ -62,6 +64,12 @@ class MockNVR:
         # path -> how many more requests to it get their connection dropped
         # (-1: always), like firmware that hangs up instead of answering.
         self.drop: dict[str, int] = {}
+        # Like the real NVR: end the session when no heartbeat (or login) came
+        # within this many seconds of ``clock``. None disables it.
+        self.heartbeat_timeout: float | None = None
+        self.clock: Callable[[], float] = time.monotonic
+        self.last_heartbeat = 0.0
+        self.heartbeats = 0
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self.sets: list[tuple[str, dict[str, Any]]] = []
         self.events: list[dict[str, Any] | tuple[str, int]] = []
@@ -142,6 +150,7 @@ class MockNVR:
         self.logins += 1
         self.token_counter += 1
         self.token = f"token{self.token_counter:028d}"
+        self.last_heartbeat = self.clock()
         data = fixture_data("web_login")
         return _ok(data, **{"X-csrftoken": self.token})
 
@@ -168,11 +177,20 @@ class MockNVR:
                 return _error("login_at_other")
             return _error("session_invalid")
 
+        if (
+            self.heartbeat_timeout is not None
+            and self.clock() - self.last_heartbeat > self.heartbeat_timeout
+        ):
+            self.token = None
+            return _error("no_heartbeat")
+
         if path == "Web/Logout":
             self.logouts += 1
             self.token = None
             return _ok()
         if path == "Login/Heartbeat":
+            self.heartbeats += 1
+            self.last_heartbeat = self.clock()
             return _ok()
         if path == "Event/Check":
             return self._event_check(data)

@@ -15,6 +15,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import SwannConfigEntry, SwannCoordinator, SwannRuntimeData
+from .entity import channel_identifier
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.CAMERA, Platform.SWITCH]
 
@@ -38,7 +39,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: SwannConfigEntry) -> boo
         raise
     # Register the NVR first so channel devices can always link to it.
     dev = coordinator.device
-    dr.async_get(hass).async_get_or_create(
+    registry = dr.async_get(hass)
+    nvr_device = registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, dev.serial)},
         manufacturer="Swann",
@@ -48,6 +50,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: SwannConfigEntry) -> boo
         sw_version=dev.firmware_version,
         hw_version=dev.hardware_version,
     )
+    # Channel devices, linked to the NVR (entities only carry identifiers).
+    for number, ch in coordinator.data.channels.items():
+        registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, channel_identifier(dev.serial, number))},
+            manufacturer="Swann",
+            name=ch.name or f"Channel {number}",
+            via_device_id=nvr_device.id,
+        )
     entry.runtime_data = SwannRuntimeData(
         client=client,
         coordinator=coordinator,

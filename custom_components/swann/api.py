@@ -132,6 +132,8 @@ _SESSION_ERRORS = frozenset(
         "token_invalid",
         "param_changed",
         "network_changed",
+        # The NVR ends sessions that miss heartbeats (seen after ~10-20 s).
+        "no_heartbeat",
     }
 )
 # error_code values from /API/Web/Login meaning the credentials were refused.
@@ -203,6 +205,7 @@ class Channel:
     name: str
     online: bool = True
     motion_detection_enabled: bool = False
+    abilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -754,6 +757,9 @@ class SwannClient:
                     name=str(name or f"CH{number}"),
                     online=status == "online",
                     motion_detection_enabled=motion.get(number, False),
+                    abilities=tuple(
+                        str(a) for a in item.get("ability") or () if a is not None
+                    ),
                 )
             )
         return channels
@@ -897,6 +903,35 @@ class SwannClient:
             else:
                 self._page_support[page] = True
         return self._page_support[page]
+
+    @property
+    def cloud_page_support(self) -> dict[str, bool]:
+        """Cloud pages probed so far and whether they are supported."""
+        return dict(self._page_support)
+
+    @property
+    def cloud_pages(self) -> list[tuple[str, str | None]]:
+        """Cloud pages the client may read, given the current options."""
+        return [
+            (page, page_type)
+            for page, page_type in _CLOUD_PAGES
+            if self.manage_servers or page not in SERVER_PAGES
+        ]
+
+    async def async_raw_request(
+        self,
+        path: str,
+        data: dict[str, Any] | None = None,
+        *,
+        request_timeout: float = REQUEST_TIMEOUT,
+    ) -> dict[str, Any]:
+        """POST to ``/API/<path>`` and return the raw ``data`` (for diagnostics).
+
+        Read-only use only: no cursor or other state is kept.
+        """
+        return await self._request(
+            f"/API/{path.lstrip('/')}", data, request_timeout=request_timeout
+        )
 
     async def _async_get_page(self, page: str, page_type: str | None) -> dict[str, Any]:
         body = {"page_type": page_type} if page_type else {}

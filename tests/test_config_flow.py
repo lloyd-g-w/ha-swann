@@ -99,10 +99,16 @@ async def test_options_flow(
     assert result["type"] is FlowResultType.FORM
     schema = result["data_schema"]({CONF_STREAM_TYPE: "sub", CONF_SCAN_INTERVAL: 30})
     assert schema["manage_servers"] is False  # experimental: off by default
+    assert schema["rtsp_transport"] == "tcp"
     assert config_entry.runtime_data.client.manage_servers is False
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_STREAM_TYPE: "sub", CONF_SCAN_INTERVAL: 30, "manage_servers": True},
+        {
+            CONF_STREAM_TYPE: "sub",
+            CONF_SCAN_INTERVAL: 30,
+            "manage_servers": True,
+            "rtsp_transport": "udp",
+        },
     )
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -110,6 +116,7 @@ async def test_options_flow(
         CONF_STREAM_TYPE: "sub",
         CONF_SCAN_INTERVAL: 30,
         "manage_servers": True,
+        "rtsp_transport": "udp",
     }
     assert config_entry.runtime_data.client.manage_servers is True
     assert config_entry.runtime_data.coordinator.update_interval.total_seconds() == 30

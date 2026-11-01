@@ -43,10 +43,12 @@
         "title": "Swann NVR options",
         "data": {
           "stream_type": "Camera stream",
+          "rtsp_transport": "RTSP transport",
           "scan_interval": "Polling interval (seconds)",
           "manage_servers": "Also manage DDNS and cloud upload servers (experimental)"
         },
         "data_description": {
+          "rtsp_transport": "How Home Assistant's stream worker reads the RTSP stream. Try UDP if live view times out (VLC uses UDP by default).",
           "manage_servers": "Lets the Swann cloud switch also turn off DDNS and the Swann/Dropbox/Google Drive/AWS upload servers. Untested: the NVR may clear their saved passwords when these settings are written."
         }
       }
@@ -57,6 +59,12 @@
       "options": {
         "main": "Main stream (high resolution)",
         "sub": "Sub stream (low resolution)"
+      }
+    },
+    "rtsp_transport": {
+      "options": {
+        "tcp": "TCP",
+        "udp": "UDP"
       }
     }
   },

@@ -24,6 +24,7 @@ from .api import (
     SwannAuthError,
     SwannClient,
     SwannConnectionError,
+    SwannError,
     SwannSessionTakenError,
 )
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
@@ -36,6 +37,9 @@ CLOUD_REFRESH_INTERVAL = 300
 # request, wait this long between rounds. Back off on errors.
 EVENT_MIN_INTERVAL = 1.0
 EVENT_ERROR_DELAY = 10.0
+# The NVR ends sessions without a heartbeat (error no_heartbeat); the web UI
+# sends one every 10 s.
+HEARTBEAT_INTERVAL = 10.0
 
 type SwannConfigEntry = ConfigEntry[SwannRuntimeData]
 
@@ -80,6 +84,9 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
         self.client = client
         self._cloud_next = 0.0
         self._events_started = False
+        # Event loop status (for diagnostics).
+        self.last_event_ok: float | None = None
+        self.last_event_error: str | None = None
 
     async def _async_setup(self) -> None:
         """Log in and fetch static device info (once, before first refresh)."""
@@ -126,14 +133,35 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             cloud=cloud,
         )
 
+    @property
+    def events_running(self) -> bool:
+        """Return True once the Event/Check loop has been started."""
+        return self._events_started
+
     def async_start_events(self) -> None:
-        """Start the Event/Check loop (stopped automatically on unload)."""
+        """Start the Event/Check and heartbeat loops (stopped on unload)."""
         if self._events_started:
             return
         self._events_started = True
         self.config_entry.async_create_background_task(
             self.hass, self._async_event_loop(), f"{DOMAIN} events"
         )
+        self.config_entry.async_create_background_task(
+            self.hass, self._async_heartbeat_loop(), f"{DOMAIN} heartbeat"
+        )
+
+    async def _async_heartbeat_loop(self) -> None:
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            await self.async_send_heartbeat()
+
+    async def async_send_heartbeat(self) -> None:
+        """Send one heartbeat; the client logs in again if the session is gone."""
+        try:
+            await self.client.async_heartbeat()
+        except SwannError as err:
+            # The interval refresh reports real failures (reauth, unavailable).
+            _LOGGER.debug("Heartbeat failed: %s", err)
 
     async def _async_event_loop(self) -> None:
         while True:
@@ -144,10 +172,15 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             except SwannAuthError as err:
                 # The interval refresh turns this into a reauth prompt.
                 _LOGGER.debug("Event check: authentication failed: %s", err)
+                self.last_event_error = f"{type(err).__name__}: {err}"
                 delay = EVENT_ERROR_DELAY
             except SwannConnectionError as err:
                 _LOGGER.debug("Event check failed: %s", err)
+                self.last_event_error = f"{type(err).__name__}: {err}"
                 delay = EVENT_ERROR_DELAY
+            else:
+                self.last_event_ok = time.time()
+                self.last_event_error = None
             elapsed = time.monotonic() - started
             await asyncio.sleep(max(0.0, delay - elapsed))
 

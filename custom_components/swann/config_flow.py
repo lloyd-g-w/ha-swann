@@ -27,10 +27,12 @@ from . import helpers
 from .api import DeviceInfo, SwannAuthError, SwannConnectionError
 from .const import (
     CONF_MANAGE_SERVERS,
+    CONF_RTSP_TRANSPORT,
     CONF_STREAM_TYPE,
     CONF_USE_HTTPS,
     DEFAULT_MANAGE_SERVERS,
     DEFAULT_PORT,
+    DEFAULT_RTSP_TRANSPORT,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_STREAM_TYPE,
     DEFAULT_USE_HTTPS,
@@ -38,6 +40,7 @@ from .const import (
     DOMAIN,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
+    RTSP_TRANSPORTS,
     STREAM_TYPES,
 )
 from .coordinator import SwannConfigEntry
@@ -152,7 +155,7 @@ class SwannConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class SwannOptionsFlow(OptionsFlowWithReload):
-    """Options: stream type, scan interval, DDNS/upload-server management."""
+    """Options: stream, RTSP transport, scan interval, DDNS/server management."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -170,6 +173,16 @@ class SwannOptionsFlow(OptionsFlowWithReload):
                     selector.SelectSelectorConfig(
                         options=STREAM_TYPES,
                         translation_key=CONF_STREAM_TYPE,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Required(
+                    CONF_RTSP_TRANSPORT,
+                    default=options.get(CONF_RTSP_TRANSPORT, DEFAULT_RTSP_TRANSPORT),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=RTSP_TRANSPORTS,
+                        translation_key=CONF_RTSP_TRANSPORT,
                         mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
