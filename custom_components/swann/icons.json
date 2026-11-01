@@ -1,0 +1,12 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "person": { "default": "mdi:account-off", "state": { "on": "mdi:account" } },
+      "vehicle": { "default": "mdi:car-off", "state": { "on": "mdi:car" } }
+    },
+    "switch": {
+      "motion_detection": { "default": "mdi:motion-sensor" },
+      "cloud": { "default": "mdi:cloud", "state": { "off": "mdi:cloud-off" } }
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Swann NVR",
+        "description": "Connect to a Swann NVR (RaySharp firmware) on your local network.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "use_https": "Use HTTPS",
+          "verify_ssl": "Verify SSL certificate",
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "host": "Hostname or IP address of the NVR.",
+          "port": "Port of the NVR web interface.",
+          "verify_ssl": "NVRs usually use a self-signed certificate; leave off unless you installed a trusted one."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Swann NVR",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "reauth_successful": "Re-authentication was successful",
+      "wrong_device": "The credentials belong to a different NVR."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Swann NVR options",
+        "data": {
+          "stream_type": "Camera stream",
+          "scan_interval": "Polling interval (seconds)"
+        }
+      }
+    }
+  },
+  "selector": {
+    "stream_type": {
+      "options": {
+        "main": "Main stream (high resolution)",
+        "sub": "Sub stream (low resolution)"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "person": {
+        "name": "Person"
+      },
+      "vehicle": {
+        "name": "Vehicle"
+      }
+    },
+    "switch": {
+      "motion_detection": {
+        "name": "Motion detection"
+      },
+      "cloud": {
+        "name": "Swann cloud"
+      }
+    }
+  },
+  "exceptions": {
+    "command_failed": {
+      "message": "NVR command failed: {error}"
+    },
+    "no_saved_cloud_settings": {
+      "message": "No saved cloud settings to restore. Re-enable cloud features in the NVR or Swann app."
+    }
+  }
+}
