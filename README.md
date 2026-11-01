@@ -256,6 +256,13 @@ on your router.
   [Live view and H.265](#live-view-and-h265)). Turn hardware acceleration off
   if it's on.
 - **Live view times out:** set *RTSP transport* to UDP in the options.
+- **Two-way talk (doorbell microphone):** not supported yet. To check whether
+  your NVR could support it, open a camera's live view, wait until it plays,
+  and download diagnostics within 30 seconds. The `rtsp_probe` section asks
+  the NVR's RTSP server (read-only: OPTIONS and DESCRIBE, no streaming) whether
+  it offers an ONVIF audio backchannel; `backchannel_offered: true` means
+  talk-back over RTSP looks possible. Only cameras that are already awake are
+  probed, so downloading diagnostics never wakes a battery camera.
 
 ## Development
 

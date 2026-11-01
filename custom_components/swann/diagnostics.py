@@ -18,7 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.loader import async_get_integration
 
 from . import helpers
-from .api import SwannClient
+from .api import SwannClient, redact_sdp, sdp_backchannel_offered, sdp_media_summary
 from .const import DOMAIN
 from .coordinator import SwannConfigEntry
 
@@ -173,6 +173,58 @@ async def _raw_responses(client: SwannClient) -> dict[str, Any]:
     return raw
 
 
+RTSP_PROBE_SKIPPED = (
+    "skipped: no camera awake (open a live view first, then download "
+    "diagnostics within 30 s)"
+)
+
+
+async def _rtsp_probe_one(client: SwannClient, channel: int) -> dict[str, Any]:
+    """DESCRIBE the sub stream with and without the ONVIF backchannel tag."""
+    sub = 1
+    result: dict[str, Any] = {"subtype": sub}
+    sdps: dict[str, str] = {}
+    for name, backchannel in (("plain", False), ("backchannel", True)):
+        try:
+            resp = await client.async_rtsp_describe(
+                channel, sub, backchannel=backchannel
+            )
+        except Exception as err:
+            result[name] = {"ok": False, "error": f"{type(err).__name__}: {err}"}
+            continue
+        sdp = resp.pop("sdp") or ""
+        sdps[name] = sdp
+        result[name] = {
+            "ok": True,
+            **resp,
+            "media": sdp_media_summary(sdp),
+            "sdp": redact_sdp(sdp),
+        }
+    result["backchannel_offered"] = (
+        sdp_backchannel_offered(sdps["plain"], sdps["backchannel"])
+        if len(sdps) == 2
+        else None
+    )
+    return result
+
+
+async def _rtsp_probe(client: SwannClient, coordinator: Any) -> Any:
+    """Probe RTSP two-way-talk support, only on cameras already awake.
+
+    Opening a sleeping battery camera's stream wakes it, so diagnostics must
+    not touch channels that are asleep.
+    """
+    data = coordinator.data
+    awake = (
+        [n for n in sorted(data.channels) if coordinator.channel_awake(n)]
+        if data
+        else []
+    )
+    if not awake:
+        return RTSP_PROBE_SKIPPED
+    return {str(n): await _rtsp_probe_one(client, n) for n in awake}
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: SwannConfigEntry
 ) -> dict[str, Any]:
@@ -232,6 +284,7 @@ async def async_get_config_entry_diagnostics(
         # Walk past a camera, then download: shows real event payloads.
         result["recent_events"] = client.recent_events
         result["raw"] = await _raw_responses(client)
+        result["rtsp_probe"] = await _rtsp_probe(client, coordinator)
     else:
         # Not loaded (e.g. setup keeps failing): probe with a temporary client.
         client = helpers.create_client(hass, entry.data)

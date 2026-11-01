@@ -41,6 +41,8 @@ _RTSP_SUBTYPE: dict[str, int] = {"main": 0, "sub": 1}
 # Waking battery cameras over RTSP (research/API.md 8): per-step timeout, and
 # how long to keep the wake stream open by default.
 WAKE_RTSP_TIMEOUT = 15.0
+# ONVIF audio backchannel (two-way talk) feature tag for RTSP Require.
+RTSP_BACKCHANNEL_REQUIRE = "www.onvif.org/ver20/backchannel"
 WAKE_HOLD_SECONDS = 30.0
 
 PATH_LOGIN = "/API/Web/Login"
@@ -403,6 +405,7 @@ class _RtspSession:
         self._cseq = 0
         self._challenge: dict[str, str] | None = None
         self.session = ""
+        self.last_status_line = ""
 
     async def send(
         self, method: str, url: str, headers: dict[str, str] | None = None
@@ -440,7 +443,8 @@ class _RtspSession:
                 continue
             line = first + await self._readline()
             break
-        parts = line.decode(errors="replace").split()
+        self.last_status_line = line.decode(errors="replace").strip()
+        parts = self.last_status_line.split()
         if len(parts) < 2 or not parts[0].startswith("RTSP/"):
             raise SwannConnectionError(f"Bad RTSP response: {line!r}")
         status = int(parts[1])
@@ -471,6 +475,72 @@ class _RtspSession:
         """Read and discard stream data until the server closes."""
         while await self._reader.read(65536):
             pass
+
+
+def sdp_media_summary(sdp: str) -> list[dict[str, Any]]:
+    """Split an SDP into media sections: m= line, direction and rtpmaps."""
+    sections: list[dict[str, Any]] = []
+    for raw in sdp.splitlines():
+        line = raw.strip()
+        if line.startswith("m="):
+            sections.append(
+                {
+                    "m": line,
+                    "kind": line[2:].split(" ")[0],
+                    "direction": None,
+                    "rtpmap": [],
+                }
+            )
+        elif sections and line in (
+            "a=sendonly",
+            "a=recvonly",
+            "a=sendrecv",
+            "a=inactive",
+        ):
+            sections[-1]["direction"] = line[2:]
+        elif sections and line.startswith("a=rtpmap:"):
+            sections[-1]["rtpmap"].append(line)
+    return sections
+
+
+def sdp_backchannel_offered(plain_sdp: str, backchannel_sdp: str) -> bool:
+    """Return whether the backchannel DESCRIBE adds a sendonly audio track.
+
+    In ONVIF's backchannel the server marks the talk-back track
+    ``a=sendonly`` (the client sends on it), and it only appears when the
+    client asked with the Require header.
+    """
+
+    def talk(sdp: str) -> list[str]:
+        return [
+            s["m"]
+            for s in sdp_media_summary(sdp)
+            if s["kind"] == "audio" and s["direction"] == "sendonly"
+        ]
+
+    return len(talk(backchannel_sdp)) > len(talk(plain_sdp))
+
+
+def redact_sdp(sdp: str) -> str:
+    """Redact addresses and credentials from an SDP (o=/c= lines, URLs)."""
+    out = []
+    for raw in sdp.splitlines():
+        line = raw.rstrip()
+        if line.startswith(("o=", "c=")):
+            line = re.sub(
+                r"\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]*:[0-9a-fA-F:]+",
+                "**REDACTED**",
+                line,
+            )
+            if line.startswith("o="):
+                parts = line.split(" ")
+                parts[0] = "o=**REDACTED**"
+                line = " ".join(parts)
+        # URL authority (credentials, host, port), then any other IPv4.
+        line = re.sub(r"rtsp://[^\s/]+", "rtsp://**REDACTED**", line)
+        line = re.sub(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", "**REDACTED**", line)
+        out.append(line)
+    return "\n".join(out)
 
 
 def parse_digest_challenge(header: str) -> dict[str, str]:
@@ -898,6 +968,50 @@ class SwannClient:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+
+    async def async_rtsp_describe(
+        self, channel: int, subtype: int = 1, *, backchannel: bool = False
+    ) -> dict[str, Any]:
+        """Read-only RTSP probe: OPTIONS and DESCRIBE, no SETUP or PLAY.
+
+        With ``backchannel`` the DESCRIBE carries the ONVIF
+        ``Require: www.onvif.org/ver20/backchannel`` header, asking the server
+        to also offer its audio talk-back track (two-way talk) in the SDP.
+        Returns the status line, the Public/Unsupported/Content-Type headers
+        and the SDP body. Note: opening the URL may itself wake a sleeping
+        camera, so callers should only probe channels that are awake.
+        """
+        url = (
+            f"rtsp://{self.host}:{self.rtsp_port}"
+            f"/rtsp/streaming?channel={channel:02d}&subtype={subtype}"
+        )
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.rtsp_port), WAKE_RTSP_TIMEOUT
+            )
+        except (OSError, TimeoutError) as err:
+            raise SwannConnectionError(f"RTSP connect failed: {err!r}") from err
+        rtsp = _RtspSession(reader, writer, self.username, self._password)
+        try:
+            _, options, _ = await rtsp.request("OPTIONS", url)
+            headers = {"Accept": "application/sdp"}
+            if backchannel:
+                headers["Require"] = RTSP_BACKCHANNEL_REQUIRE
+            status, resp, body = await rtsp.request("DESCRIBE", url, headers)
+        except (OSError, TimeoutError, asyncio.IncompleteReadError) as err:
+            raise SwannConnectionError(f"RTSP probe failed: {err!r}") from err
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        return {
+            "status": status,
+            "status_line": rtsp.last_status_line,
+            "public": options.get("public"),
+            "unsupported": resp.get("unsupported"),
+            "content_type": resp.get("content-type"),
+            "sdp": body,
+        }
 
     async def async_close(self) -> None:
         """Log out (sessions are limited on the NVR) and detach the HTTP session.

@@ -61,6 +61,10 @@ class MockNVR:
         self.logins = 0
         self.rtsp_requests: list[tuple[str, str]] = []
         self.rtsp_connections = 0
+        # ONVIF backchannel (two-way talk) offered when the client asks for it.
+        self.rtsp_backchannel = False
+        self.rtsp_describes: list[str | None] = []
+        self.rtsp_sdp_host = "192.168.86.152"
         self.wake_delay = 0.0
         self.wake_ok = True
         self.logouts = 0
@@ -207,10 +211,31 @@ class MockNVR:
                         f'WWW-Authenticate: Digest realm="{realm}",nonce="{nonce}"\r\n',
                     )
                 elif method == "DESCRIBE":
-                    sdp = "v=0\r\nm=video 0 RTP/AVP 96\r\na=control:trackID=0\r\n"
+                    host = self.rtsp_sdp_host
+                    sdp = (
+                        f"v=0\r\no=- 1001 1 IN IP4 {host}\r\ns=RTSP Session\r\n"
+                        f"c=IN IP4 {host}\r\n"
+                        "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H265/90000\r\n"
+                        "a=control:trackID=0\r\na=recvonly\r\n"
+                        "m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+                        "a=control:trackID=1\r\na=recvonly\r\n"
+                    )
+                    asked = "www.onvif.org/ver20/backchannel" in headers.get(
+                        "require", ""
+                    )
+                    extra = ""
+                    if asked and self.rtsp_backchannel:
+                        sdp += (
+                            "m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+                            "a=control:trackID=2\r\na=sendonly\r\n"
+                        )
+                    elif asked:
+                        extra = "Unsupported: www.onvif.org/ver20/backchannel\r\n"
+                    self.rtsp_describes.append(headers.get("require"))
                     reply(
                         "200 OK",
-                        f"Content-Base: {url}/\r\nContent-Type: application/sdp\r\n",
+                        f"Content-Base: {url}/\r\nContent-Type: application/sdp\r\n"
+                        + extra,
                         sdp,
                     )
                 elif method == "SETUP":

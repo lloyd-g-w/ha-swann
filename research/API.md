@@ -237,6 +237,7 @@ Same resource, two views selected by `page_type`:
 * Abilities: `TalkHalf`, `TalkFull`, `DualTalk` (the MR4K cameras list `TalkHalf`, `TalkFull`).
 * raysharp-ha's `/API/AccessSystem/Intercom/CallSetup/Set` is SIP intercom setup on access-control devices, not camera talk.
 * So HA two-way talk would need the port-9000 media protocol reverse-engineered (or an RTSP backchannel test with go2rtc). Not implemented.
+* 0.1.8: diagnostics `rtsp_probe` sends DESCRIBE to awake channels' sub stream with and without `Require: www.onvif.org/ver20/backchannel` and reports whether a sendonly audio track appears (`backchannel_offered`). Result on the NVW-MR4K: pending a diagnostics file taken while a camera is awake.
 
 ## 6. Version differences and detection
 * Request `version` is always `"1.0"` in this UI (`apiVersion.version`); it is not a firmware version. [UI H]

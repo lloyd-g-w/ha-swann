@@ -22,6 +22,9 @@ from custom_components.swann.api import (
     SwannClient,
     SwannConnectionError,
     SwannSessionTakenError,
+    redact_sdp,
+    sdp_backchannel_offered,
+    sdp_media_summary,
 )
 
 from .mock_nvr import MockNVR, fixture_data
@@ -611,3 +614,39 @@ async def test_recent_events_bounded(client: SwannClient, mock: MockNVR) -> None
     for _ in range(len(mock.events)):
         await client.async_get_channel_events()
     assert len(client.recent_events) == RECENT_EVENTS_MAX
+
+
+# --- SDP helpers (RTSP two-way-talk probe) ------------------------------------
+
+_PLAIN_SDP = (
+    "v=0\r\no=admin 1 1 IN IP4 10.0.0.5\r\nc=IN IP4 10.0.0.5\r\n"
+    "a=control:rtsp://admin:pw@10.0.0.5:554/x\r\n"
+    "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H265/90000\r\na=recvonly\r\n"
+    "m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=recvonly\r\n"
+)
+_TALK = "m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendonly\r\n"
+
+
+def test_sdp_media_summary() -> None:
+    media = sdp_media_summary(_PLAIN_SDP + _TALK)
+    assert [(m["kind"], m["direction"]) for m in media] == [
+        ("video", "recvonly"),
+        ("audio", "recvonly"),
+        ("audio", "sendonly"),
+    ]
+    assert media[0]["rtpmap"] == ["a=rtpmap:96 H265/90000"]
+
+
+def test_sdp_backchannel_offered() -> None:
+    assert sdp_backchannel_offered(_PLAIN_SDP, _PLAIN_SDP + _TALK) is True
+    assert sdp_backchannel_offered(_PLAIN_SDP, _PLAIN_SDP) is False
+    # A sendonly track already in the plain DESCRIBE isn't a backchannel offer.
+    assert sdp_backchannel_offered(_PLAIN_SDP + _TALK, _PLAIN_SDP + _TALK) is False
+
+
+def test_redact_sdp() -> None:
+    text = redact_sdp(_PLAIN_SDP)
+    assert "10.0.0.5" not in text
+    assert "admin" not in text
+    assert "pw" not in text
+    assert "o=**REDACTED** 1 1 IN IP4 **REDACTED**" in text

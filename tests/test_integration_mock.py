@@ -1180,3 +1180,57 @@ async def test_unknown_event_keys_recorded(
     recent = diag["recent_events"]
     assert [e["entry"]["channel"] for e in recent] == ["CH1"]
     assert recent[0]["entry"]["doorbell_alarm"] == {"state": "Ring"}
+
+
+# --- RTSP two-way-talk probe in diagnostics ------------------------------------
+
+
+async def test_diagnostics_rtsp_probe_backchannel_offered(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    mock_nvr.rtsp_backchannel = True
+    await _setup(hass, entry)
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    probe = diag["rtsp_probe"]
+    # Only awake channels are probed (CH4 is offline in the default fixtures).
+    assert sorted(probe) == ["1", "2", "3"]
+    ch1 = probe["1"]
+    assert ch1["backchannel_offered"] is True
+    assert ch1["subtype"] == 1
+    assert ch1["plain"]["status"] == 200
+    assert ch1["plain"]["status_line"] == "RTSP/1.0 200 OK"
+    assert "DESCRIBE" in ch1["plain"]["public"]
+    assert [m["direction"] for m in ch1["plain"]["media"]] == ["recvonly"] * 2
+    talk = ch1["backchannel"]["media"][-1]
+    assert talk["kind"] == "audio"
+    assert talk["direction"] == "sendonly"
+    assert talk["rtpmap"] == ["a=rtpmap:0 PCMU/8000"]
+    # Read-only: DESCRIBE with and without the ONVIF tag, never SETUP/PLAY.
+    assert "www.onvif.org/ver20/backchannel" in mock_nvr.rtsp_describes
+    assert None in mock_nvr.rtsp_describes
+    methods = {m for m, _ in mock_nvr.rtsp_requests}
+    assert methods <= {"OPTIONS", "DESCRIBE"}
+    # SDP o=/c= addresses are redacted.
+    text = json.dumps(diag)
+    assert "192.168.86.152" not in text
+    assert "c=IN IP4 **REDACTED**" in ch1["plain"]["sdp"]
+
+
+async def test_diagnostics_rtsp_probe_no_backchannel(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup(hass, entry)
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    ch1 = diag["rtsp_probe"]["1"]
+    assert ch1["backchannel_offered"] is False
+    assert ch1["backchannel"]["unsupported"] == "www.onvif.org/ver20/backchannel"
+    assert ch1["plain"]["content_type"] == "application/sdp"
+
+
+async def test_diagnostics_rtsp_probe_skipped_when_all_asleep(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)  # all four cameras "Sleep"
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    assert diag["rtsp_probe"] == diagnostics.RTSP_PROBE_SKIPPED
+    assert mock_nvr.rtsp_connections == 0  # sleeping cameras weren't touched
