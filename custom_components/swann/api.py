@@ -484,7 +484,12 @@ class SwannClient:
         )
 
     async def async_close(self) -> None:
-        """Log out (sessions are limited on the NVR) and close the HTTP session."""
+        """Log out (sessions are limited on the NVR) and detach the HTTP session.
+
+        Detach rather than close: the session comes from Home Assistant's
+        async_create_clientsession, which shares HA's connector and must not be
+        closed.
+        """
         if self._session is None or self._session.closed:
             return
         if self._token is not None:
@@ -493,7 +498,7 @@ class SwannClient:
             except SwannError as err:
                 _LOGGER.debug("Logout failed: %s", err)
             self._token = None
-        await self._session.close()
+        self._session.detach()
 
     # --- transport -------------------------------------------------------
 

@@ -6,16 +6,21 @@ from collections.abc import AsyncGenerator
 import copy
 from unittest.mock import patch
 
-import aiohttp
 from aiohttp.test_utils import TestServer
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import ATTR_ENTITY_ID, STATE_OFF, STATE_ON
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    CONF_HOST,
+    CONF_PORT,
+    STATE_OFF,
+    STATE_ON,
+)
 from homeassistant.core import HomeAssistant
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.swann import coordinator as coordinator_mod
-from custom_components.swann.api import SwannClient
+from custom_components.swann import coordinator as coordinator_mod, helpers
+from custom_components.swann.const import CONF_USE_HTTPS
 
 from .conftest import USER_INPUT
 from .mock_nvr import MockNVR, fixture_data
@@ -29,26 +34,22 @@ async def mock_nvr(socket_enabled) -> AsyncGenerator[MockNVR]:
     mock = MockNVR(username=USER_INPUT["username"], password=USER_INPUT["password"])
     server = TestServer(mock.app, host="127.0.0.1")
     await server.start_server()
-    sessions: list[aiohttp.ClientSession] = []
+    real_create_client = helpers.create_client
 
     def _create(hass, data):
-        # Like helpers.create_client: one session per client (closed on unload).
-        sessions.append(
-            aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
-        )
-        return SwannClient(
-            sessions[-1],
-            "127.0.0.1",
-            server.port,
-            data["username"],
-            data["password"],
-            use_https=False,
+        # The real factory (HA's client session), pointed at the mock over HTTP.
+        return real_create_client(
+            hass,
+            {
+                **data,
+                CONF_HOST: "127.0.0.1",
+                CONF_PORT: server.port,
+                CONF_USE_HTTPS: False,
+            },
         )
 
     with patch("custom_components.swann.helpers.create_client", side_effect=_create):
         yield mock
-    for http in sessions:
-        await http.close()
     await server.close()
 
 
@@ -68,7 +69,10 @@ async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> None:
 
 
 async def test_setup_entities(
-    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+    hass: HomeAssistant,
+    mock_nvr: MockNVR,
+    entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     await _setup(hass, entry)
     assert entry.state is ConfigEntryState.LOADED
@@ -79,6 +83,7 @@ async def test_setup_entities(
 
     await hass.config_entries.async_unload(entry.entry_id)
     assert mock_nvr.logouts == 1
+    assert "closes the Home Assistant aiohttp session" not in caplog.text
 
 
 async def test_events_reach_binary_sensors(

@@ -51,9 +51,14 @@ async def nvr(socket_enabled) -> AsyncGenerator[tuple[MockNVR, TestServer]]:
 
 @pytest.fixture
 async def session() -> AsyncGenerator[aiohttp.ClientSession]:
-    """HTTP session for the client."""
-    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
-        yield http
+    """HTTP session for the client; the test owns the connector, as HA does."""
+    connector = aiohttp.TCPConnector()
+    http = aiohttp.ClientSession(
+        connector=connector, cookie_jar=aiohttp.CookieJar(unsafe=True)
+    )
+    yield http
+    await http.close()
+    await connector.close()
 
 
 def make_client(
@@ -175,11 +180,17 @@ async def test_login_at_other_does_not_fight(
     assert mock.logins == 2
 
 
-async def test_close_logs_out(client: SwannClient, mock: MockNVR) -> None:
+async def test_close_logs_out(
+    client: SwannClient, mock: MockNVR, session: aiohttp.ClientSession
+) -> None:
+    connector = session.connector
     await client.async_login()
     await client.async_close()
     assert mock.logouts == 1
     assert not client.logged_in
+    # Detached, not closed: HA's shared connector must stay open.
+    assert session.closed
+    assert not connector.closed
 
 
 # --- device / channels -----------------------------------------------------
