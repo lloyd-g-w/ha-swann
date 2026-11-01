@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import re
+
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.storage import Store
 
 from . import helpers
+from .api import status_available
 from .const import (
     CLOUD_STORE_VERSION,
     CONF_MANAGE_SERVERS,
@@ -16,6 +20,8 @@ from .const import (
 )
 from .coordinator import SwannConfigEntry, SwannCoordinator, SwannRuntimeData
 from .entity import channel_identifier
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
@@ -80,8 +86,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: SwannConfigEntry) -> boo
         cloud_store=cloud_store(hass, entry.entry_id),
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _async_remove_stale_entities(hass, entry, coordinator)
     coordinator.async_start_events()
     return True
+
+
+_CHANNEL_UID_RE = re.compile(r"_ch(\d{2})_")
+
+
+@callback
+def _async_remove_stale_entities(
+    hass: HomeAssistant, entry: SwannConfigEntry, coordinator: SwannCoordinator
+) -> None:
+    """Remove registry entries this setup no longer provides.
+
+    Runs only after a successful first refresh (setup would have failed
+    otherwise), so a temporarily unreachable NVR wipes nothing. Entities of a
+    channel that is merely offline (or in an unknown state) are kept, since its
+    capabilities may be incomplete; channels Online or asleep report them in
+    full, and empty slots ("NotPaired") lose everything.
+    """
+    registry = er.async_get(hass)
+    created = coordinator.created_unique_ids
+    serial = coordinator.device.serial
+    for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        unique_id = reg_entry.unique_id
+        if unique_id in created or not unique_id.startswith(f"{serial}_"):
+            continue
+        if match := _CHANNEL_UID_RE.match(unique_id, len(serial)):
+            channel = coordinator.data.channels.get(int(match.group(1)))
+            if (
+                channel is not None
+                and channel.paired
+                and not status_available(channel.connect_status)
+            ):
+                continue  # offline: keep until it reports its capabilities
+        _LOGGER.debug("Removing stale entity %s", reg_entry.entity_id)
+        registry.async_remove(reg_entry.entity_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SwannConfigEntry) -> bool:

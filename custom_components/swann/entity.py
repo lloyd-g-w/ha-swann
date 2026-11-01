@@ -20,6 +20,7 @@ class SwannEntity(CoordinatorEntity[SwannCoordinator]):
         super().__init__(coordinator)
         dev = coordinator.device
         self._attr_unique_id = f"{dev.serial}_{key}"
+        coordinator.created_unique_ids.add(self._attr_unique_id)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, dev.serial)},
             manufacturer="Swann",
@@ -47,6 +48,7 @@ class SwannChannelEntity(CoordinatorEntity[SwannCoordinator]):
         self.channel_number = channel
         serial = coordinator.device.serial
         self._attr_unique_id = f"{serial}_ch{channel:02d}_{key}"
+        coordinator.created_unique_ids.add(self._attr_unique_id)
         # The channel device itself (with its link to the NVR via
         # via_device_id) is registered in async_setup_entry; entities only
         # reference it, since via_device in DeviceInfo is deprecated.

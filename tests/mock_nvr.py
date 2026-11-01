@@ -8,6 +8,7 @@ with a queue of responses, and error injection.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 import copy
 import hashlib
@@ -58,6 +59,10 @@ class MockNVR:
         self.token: str | None = None
         self.token_counter = 0
         self.logins = 0
+        self.rtsp_requests: list[tuple[str, str]] = []
+        self.rtsp_connections = 0
+        self.wake_delay = 0.0
+        self.wake_ok = True
         self.logouts = 0
         self.login_error: tuple[str, int, dict] | None = None
         self.next_error: dict[str, tuple[str, int]] = {}
@@ -123,6 +128,122 @@ class MockNVR:
         )
         self.remove_page("NetworkConfig/P2P")  # 404 on this firmware
         self.events = [fixture_data("real_mr4k_event_check_initial")]
+
+    # --- RTSP stub: opening a stream wakes a sleeping channel ----------------
+
+    def set_channel_status(self, channel: int, status: str) -> None:
+        """Set a channel's connect_status in ChannelInfo."""
+        info = self.pages[("Login/ChannelInfo", None)]
+        items = info["channel_param"]["items"]
+        items[channel - 1]["connect_status"] = status
+
+    def channel_status(self, channel: int) -> str:
+        info = self.pages[("Login/ChannelInfo", None)]
+        return info["channel_param"]["items"][channel - 1]["connect_status"]
+
+    def _wake(self, channel: int) -> None:
+        """The camera came up: ChannelInfo and Event/Check report Online."""
+        self.set_channel_status(channel, "Online")
+        event = copy.deepcopy(fixture_data("real_mr4k_event_check_initial"))
+        event["sequence"] = event.get("sequence", 0) + 1
+        for alarm in event["alarm_list"][0]["channel_alarm"]:
+            if alarm["channel"] == f"CH{channel}":
+                alarm["camera_connect_status"] = {"connect_status": "Online"}
+        self.events.append(event)
+
+    async def serve_rtsp(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Minimal RTSP server with Digest auth (realm 'device', like the NVR).
+
+        PLAY on a sleeping channel wakes it after ``wake_delay`` seconds
+        (unless ``wake_ok`` is False), then a dummy interleaved frame is sent
+        now and then until the client goes away.
+        """
+        self.rtsp_connections += 1
+        realm, nonce = "device", "8aa253c3674b"
+        wake_task: asyncio.Task | None = None
+        try:
+            while True:
+                head = await reader.readuntil(b"\r\n\r\n")
+                lines = head.decode().split("\r\n")
+                method, url, _ = lines[0].split(" ", 2)
+                headers = {}
+                for line in lines[1:]:
+                    if ":" in line:
+                        key, _, value = line.partition(":")
+                        headers[key.strip().lower()] = value.strip()
+                cseq = headers.get("cseq", "0")
+                self.rtsp_requests.append((method, url))
+
+                def reply(
+                    status: str, extra: str = "", body: str = "", cseq: str = cseq
+                ) -> None:
+                    text = f"RTSP/1.0 {status}\r\nCSeq: {cseq}\r\n{extra}"
+                    if body:
+                        text += f"Content-Length: {len(body)}\r\n"
+                    writer.write((text + "\r\n" + body).encode())
+
+                if method == "OPTIONS":
+                    reply(
+                        "200 OK", "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n"
+                    )
+                elif method == "TEARDOWN":
+                    reply("200 OK")
+                    await writer.drain()
+                    return
+                elif not self._rtsp_auth_ok(headers, method, url, realm, nonce):
+                    reply(
+                        "401 Unauthorized",
+                        f'WWW-Authenticate: Digest realm="{realm}",nonce="{nonce}"\r\n',
+                    )
+                elif method == "DESCRIBE":
+                    sdp = "v=0\r\nm=video 0 RTP/AVP 96\r\na=control:trackID=0\r\n"
+                    reply(
+                        "200 OK",
+                        f"Content-Base: {url}/\r\nContent-Type: application/sdp\r\n",
+                        sdp,
+                    )
+                elif method == "SETUP":
+                    reply("200 OK", "Session: 12345678;timeout=60\r\n")
+                elif method == "PLAY":
+                    reply("200 OK", "Session: 12345678\r\n")
+                    channel = int(re.search(r"channel=(\d+)", url).group(1))
+                    if self.wake_ok and self.channel_status(channel) == "Sleep":
+                        wake_task = asyncio.get_running_loop().create_task(
+                            self._wake_later(channel)
+                        )
+                    writer.write(b"$\x00\x00\x04abcd")
+                else:
+                    reply("405 Method Not Allowed")
+                await writer.drain()
+        except asyncio.IncompleteReadError, ConnectionError:
+            pass
+        finally:
+            if wake_task is not None and not wake_task.done():
+                wake_task.cancel()
+            writer.close()
+
+    async def _wake_later(self, channel: int) -> None:
+        await asyncio.sleep(self.wake_delay)
+        self._wake(channel)
+
+    def _rtsp_auth_ok(
+        self, headers: dict[str, str], method: str, url: str, realm: str, nonce: str
+    ) -> bool:
+        auth = headers.get("authorization", "")
+        if not auth.startswith("Digest "):
+            return False
+        params = dict(re.findall(r'(\w+)="?([^",]*)"?', auth))
+        ha1 = _md5(f"{self.username}:{realm}:{self.password}")
+        ha2 = _md5(f"{method}:{params.get('uri', '')}")
+        if params.get("qop") == "auth":
+            expected = _md5(
+                f"{ha1}:{nonce}:{params['nc']}:{params['cnonce']}:auth:{ha2}"
+            )
+        else:
+            expected = _md5(f"{ha1}:{nonce}:{ha2}")
+        return params.get("response") == expected and params.get("uri") == url
 
     def remove_page(self, page: str) -> None:
         """Make a page unsupported (Range/Get/Set answer 404)."""

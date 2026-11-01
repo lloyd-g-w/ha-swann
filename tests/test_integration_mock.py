@@ -9,6 +9,7 @@ import json
 from unittest.mock import patch
 
 from aiohttp.test_utils import TestServer
+from homeassistant.components.camera.const import DATA_COMPONENT as CAMERA_DATA_KEY
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -43,11 +44,13 @@ async def mock_nvr(socket_enabled) -> AsyncGenerator[MockNVR]:
     mock = MockNVR(username=USER_INPUT["username"], password=USER_INPUT["password"])
     server = TestServer(mock.app, host="127.0.0.1")
     await server.start_server()
+    rtsp = await asyncio.start_server(mock.serve_rtsp, "127.0.0.1", 0)
+    rtsp_port = rtsp.sockets[0].getsockname()[1]
     real_create_client = helpers.create_client
 
     def _create(hass, data):
         # The real factory (HA's client session), pointed at the mock over HTTP.
-        return real_create_client(
+        client = real_create_client(
             hass,
             {
                 **data,
@@ -56,9 +59,12 @@ async def mock_nvr(socket_enabled) -> AsyncGenerator[MockNVR]:
                 CONF_USE_HTTPS: False,
             },
         )
+        client.rtsp_port = rtsp_port
+        return client
 
     with patch("custom_components.swann.helpers.create_client", side_effect=_create):
         yield mock
+    rtsp.close()
     await server.close()
 
 
@@ -539,3 +545,227 @@ async def test_real_mr4k_diagnostics_recent_events(
     assert diag["cloud_link"] == "Connected"
     for name in ("storage_cloud", "auto_upgrade", "netbase", "intelligent_pd"):
         assert name in diag["raw"]
+
+
+# --- waking battery cameras for live view -------------------------------------
+
+
+@pytest.fixture
+def fast_wake():
+    """Short wake timings (real time) for the tests."""
+    with (
+        patch.object(coordinator_mod, "WAKE_TIMEOUT", 1.5),
+        patch.object(coordinator_mod, "WAKE_POLL_INTERVAL", 0.05),
+        patch.object(coordinator_mod, "WAKE_STREAM_HOLD", 0.5),
+    ):
+        yield
+
+
+def _camera(hass: HomeAssistant, entity_id: str):
+    return hass.data[CAMERA_DATA_KEY].get_entity(entity_id)
+
+
+def _plays(mock_nvr: MockNVR) -> list[str]:
+    return [url for method, url in mock_nvr.rtsp_requests if method == "PLAY"]
+
+
+async def test_wake_before_live_view(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry, fast_wake
+) -> None:
+    mock_nvr.wake_delay = 0.2
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    camera = _camera(hass, "camera.syd_driveway")
+    # Setup (provider detection calls stream_source) wakes nothing.
+    assert mock_nvr.rtsp_connections == 0
+    assert coordinator.channel_asleep(1)
+
+    assert await coordinator.async_wake_channel(1) is True
+    assert coordinator.channel_awake(1)
+    # Woken over RTSP on the sub stream, with Digest auth accepted.
+    assert len(_plays(mock_nvr)) == 1
+    assert "channel=01&subtype=1" in _plays(mock_nvr)[0]
+    # Awake now: stream_source is immediate and nothing else is sent.
+    url = await camera.stream_source()
+    assert "channel=01&subtype=0" in url
+    assert await coordinator.async_wake_channel(1) is True
+    assert len(_plays(mock_nvr)) == 1
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_concurrent_viewers_share_one_wake(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry, fast_wake
+) -> None:
+    mock_nvr.wake_delay = 0.2
+    await _setup_real(hass, mock_nvr, entry)
+    camera = _camera(hass, "camera.syd_garden")
+    results = await asyncio.gather(
+        *(camera.async_wake_for_viewing() for _ in range(3)),
+        entry.runtime_data.coordinator.async_wake_channel(3),
+    )
+    assert results[-1] is True
+    assert mock_nvr.rtsp_connections == 1
+    assert len(_plays(mock_nvr)) == 1
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_wake_timeout_still_opens_stream(
+    hass: HomeAssistant,
+    mock_nvr: MockNVR,
+    entry: MockConfigEntry,
+    fast_wake,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_nvr.wake_ok = False  # the camera never comes up
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    camera = _camera(hass, "camera.sydney_door")
+    caplog.set_level("DEBUG", logger="custom_components.swann")
+    with patch(
+        "homeassistant.components.camera.Camera.async_create_stream",
+        return_value=None,
+    ) as create:
+        await camera.async_create_stream()
+    create.assert_awaited_once()
+    assert "did not wake in time" in caplog.text
+    assert coordinator.channel_asleep(4)
+    # The wake stream was abandoned (no lingering RTSP session).
+    await hass.async_block_till_done()
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_webrtc_offer_wakes_first(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry, fast_wake
+) -> None:
+    mock_nvr.wake_delay = 0.1
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    camera = _camera(hass, "camera.syd_side_path")
+    seen = []
+
+    async def provider_offer(self, offer, session_id, send_message):
+        seen.append(coordinator.channel_awake(2))
+
+    with patch(
+        "homeassistant.components.camera.Camera.async_handle_async_webrtc_offer",
+        provider_offer,
+    ):
+        await camera.async_handle_async_webrtc_offer("sdp", "s1", lambda m: None)
+    assert seen == [True]
+    # Still treated as a provider-backed (not native) WebRTC camera.
+    assert camera._supports_native_async_webrtc is False
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.event_loop_enabled
+async def test_wake_via_event_check(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry, fast_wake
+) -> None:
+    """The Online status arrives through the Event/Check loop."""
+    mock_nvr.wake_delay = 0.1
+    with (
+        patch.object(coordinator_mod, "EVENT_MIN_INTERVAL", 0.01),
+        patch.object(coordinator_mod, "WAKE_POLL_INTERVAL", 10.0),
+    ):
+        await _setup_real(hass, mock_nvr, entry)
+        coordinator = entry.runtime_data.coordinator
+        # The ChannelInfo poll never runs (10 s); only Event/Check says Online.
+        mock_nvr.set_channel_status(1, "Sleep")
+        assert await coordinator.async_wake_channel(1) is True
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_snapshot_never_wakes(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    camera = _camera(hass, "camera.syd_driveway")
+    with patch(
+        "custom_components.swann.camera.async_get_image", return_value=b"jpeg"
+    ) as grab:
+        assert await camera.async_camera_image() is None
+    grab.assert_not_called()
+    assert mock_nvr.rtsp_connections == 0
+
+
+# --- stale entity cleanup -------------------------------------------------------
+
+
+async def _serial_after_setup(hass: HomeAssistant, entry: MockConfigEntry) -> str:
+    """Set up once to learn the device serial, then unload."""
+    await _setup(hass, entry)
+    serial = entry.runtime_data.coordinator.device.serial
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    return serial
+
+
+async def test_stale_entities_removed(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    mock_nvr.use_real_mr4k()
+    serial = await _serial_after_setup(hass, entry)
+    registry = er.async_get(hass)
+    # 0.1.3's motion switch on a sleeping camera, and an empty slot's sensor.
+    old_switch = registry.async_get_or_create(
+        "switch",
+        "swann",
+        f"{serial}_ch01_motion_detection",
+        config_entry=entry,
+        suggested_object_id="syd_driveway_motion_detection_old",
+    )
+    unpaired = registry.async_get_or_create(
+        "binary_sensor",
+        "swann",
+        f"{serial}_ch05_motion",
+        config_entry=entry,
+        suggested_object_id="channel_5_motion",
+    )
+    mock_nvr.events = [fixture_data("real_mr4k_event_check_initial")]
+    await _setup(hass, entry)
+    assert registry.async_get(old_switch.entity_id) is None
+    assert registry.async_get(unpaired.entity_id) is None
+    assert hass.states.get("select.syd_driveway_motion_detection_mode") is not None
+    assert hass.states.get("camera.syd_driveway") is not None
+
+
+async def test_offline_channel_entities_kept(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    mock_nvr.use_real_mr4k()
+    serial = await _serial_after_setup(hass, entry)
+    mock_nvr.set_channel_status(2, "Offline")
+    registry = er.async_get(hass)
+    # An offline camera may report no abilities: none of its entities go.
+    kept = registry.async_get_or_create(
+        "binary_sensor",
+        "swann",
+        f"{serial}_ch02_retired_kind",
+        config_entry=entry,
+    )
+    mock_nvr.events = [fixture_data("real_mr4k_event_check_initial")]
+    await _setup(hass, entry)
+    assert registry.async_get(kept.entity_id) is not None
+
+
+async def test_stale_cleanup_skipped_when_nvr_unreachable(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    registry = er.async_get(hass)
+    kept = registry.async_get_or_create(
+        "switch",
+        "swann",
+        f"{entry.unique_id}_ch01_motion_detection",
+        config_entry=entry,
+    )
+    mock_nvr.next_error["Login/DeviceInfo/Get"] = ("not_found", 404)
+    with patch.object(
+        SwannClient, "async_login", side_effect=SwannConnectionError("down")
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert registry.async_get(kept.entity_id) is not None

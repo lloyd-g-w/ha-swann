@@ -64,11 +64,17 @@ Controlling the floodlight and siren is not supported yet (planned, via
 
 Battery Wi-Fi cameras (e.g. the NVW-MR4K kit) sleep between events and report
 `Sleep`; they count as available, and **Awake** shows whether one is awake
-right now. To save their batteries the integration never preloads streams, and
-camera snapshots are cached: at most one every 10 s while a camera is awake and
-one every 30 minutes while it sleeps (opening a snapshot or stream wakes it).
-Live view still wakes the camera on demand. Turn off *Preload stream* in the
-camera's settings if you enabled it.
+right now.
+
+- **Live view wakes the camera.** When you open a sleeping camera's live view,
+  the integration first opens its RTSP stream to wake it and waits until the
+  NVR reports it awake (up to 20 s), then starts the player. Expect a few
+  seconds' wait before video appears; several viewers share one wake-up.
+- **Snapshots never wake a camera.** While it sleeps you see the last frame
+  taken while it was awake (or none yet); while awake, a fresh frame at most
+  every 10 s.
+- Streams are never preloaded. Leave *Preload stream* off in the camera's
+  settings: with it on, HA wakes every camera at startup.
 
 ## The "Swann cloud" switch
 

@@ -116,14 +116,31 @@ async def test_camera_rtsp_transport(
 async def test_camera_snapshots_cached_and_never_streaming(
     hass: HomeAssistant, fake_client: FakeSwannClient, config_entry: MockConfigEntry
 ):
-    """Battery cameras: no preloading, and snapshots don't wake them often."""
+    """Battery cameras: no preloading, and snapshots never wake them."""
     fake_client.channels[1] = replace(fake_client.channels[1], connect_status="Sleep")
     await _setup(hass, config_entry)
+    coordinator = config_entry.runtime_data.coordinator
     camera = hass.data[CAMERA_DATA_KEY].get_entity("camera.front_door")
     assert camera.is_streaming is False
     with patch(
         "custom_components.swann.camera.async_get_image", return_value=b"jpeg"
     ) as grab:
+        # Asleep and nothing cached yet: no image rather than a wake-up.
+        assert await camera.async_camera_image() is None
+        assert grab.call_count == 0
+        # Awake: a fresh frame, cached for 10 s.
+        fake_client.channels[1] = replace(
+            fake_client.channels[1], connect_status="Online"
+        )
+        await coordinator.async_refresh()
         assert await camera.async_camera_image() == b"jpeg"
         assert await camera.async_camera_image() == b"jpeg"
-    assert grab.call_count == 1  # asleep: cached for 30 minutes
+        assert grab.call_count == 1
+        # Asleep again: the last frame, never a new grab.
+        fake_client.channels[1] = replace(
+            fake_client.channels[1], connect_status="Sleep"
+        )
+        await coordinator.async_refresh()
+        camera._snapshot_time = 0.0  # even when the cached one is old
+        assert await camera.async_camera_image() == b"jpeg"
+        assert grab.call_count == 1

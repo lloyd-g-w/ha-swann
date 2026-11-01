@@ -227,6 +227,16 @@ Same resource, two views selected by `page_type`:
 * Differences seen vs the HA client's V8.2.x: V8.2 has `AlarmConfig/Disarming`, `NetworkConfig/CloudService`, Event/Check that answers immediately, `ai_snap_picture` missing from events. This UI has `StorageConfig/Server` with `swann_cloud_info`, `Schedules/Cloud`. Paths like `/API/System/General/Get`, `/API/Stream/Rtsp Url/Get` in the HA client are leftovers that do not match this UI (here `SystemConfig/General`).
 * Older RaySharp firmware (2017–2019 docs) used `/action/...` with Basic auth: not applicable. [DOC]
 
+## 8. Waking sleeping battery cameras
+
+Seen on the user's NVW-MR4K (V8.2.2): battery Wi-Fi cameras report `connect_status: "Sleep"` in `Login/ChannelInfo` and in Event/Check `camera_connect_status`, and the channel `ability` list includes `"NotAutoReconnect"` [device, H].
+
+* **There is no HTTP wake call in this UI.** No path in the URI table (`core.js`) mentions wake, sleep, battery or keep-alive; `PreviewChannel/*` covers PTZ, manual alarm, Floodlight2AudioAlarm, zero channel and ControlBtnOper only [UI, H].
+* **The UI wakes a camera by playing it.** `core.js` enum `ChnConnctStatusEnum` has `SLEEP:"Sleep"` and `isSleep(ch)`. Live view treats Sleep like Online: the play button is enabled when `!isOnline && !isSleep` is false (`live.js`), and "open all" calls `play(ch)` for every channel that `isOnline(ch) || isSleep(ch)` (`core.js`) [UI, H]. Playback goes over the proprietary media channel (`media_port` 9000, id/key from login) [UI, H], so opening any stream is what wakes the camera [GUESS/M].
+* **`getAutoConn()`** builds a per-channel 0/1 list (0 for `NotAutoReconnect`) passed to the player plugin: the plugin does not reconnect to such channels by itself, i.e. it does not keep battery cameras awake [UI H for the code, meaning M].
+* **RTSP wakes it too** [device, H]: `ffprobe -rtsp_transport tcp` on `rtsp://NVR:554/rtsp/streaming?channel=01&subtype=0` returned stream info for a sleeping camera, after a few seconds. go2rtc and HA's stream worker time out (~5 s) first.
+* **Integration (0.1.5):** to wake, open RTSP on the sub stream (OPTIONS, DESCRIBE with Digest, SETUP interleaved TCP, PLAY), discard data, wait until Event/Check (or a ChannelInfo poll every 2 s) reports `Online` (timeout 20 s), keep the wake stream open 10 s more, then TEARDOWN. Only done when the frontend opens live view (WebRTC offer or HLS stream), never for snapshots. Whether DESCRIBE alone would wake the camera, and how long it stays awake after the stream closes (Motion config `SleepDuration: 5`, unit unknown), are unverified [GUESS].
+
 ## 7. Open items (need one live check, read-only)
 1. Real shapes of `SystemInfo/Base/Get`, `Login/ChannelInfo/Get`, `Preview/StreamUrl/Get` (fixtures are modelled).
 2. Event/Check: does it hold the request? Which keys appear for motion vs `int_alarm` on this NVR?

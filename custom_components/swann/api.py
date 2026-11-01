@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import contextlib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import hashlib
@@ -37,6 +38,10 @@ StreamType = Literal["main", "sub"]
 
 # RaySharp RTSP "subtype": 0 = main stream, 1 = sub stream.
 _RTSP_SUBTYPE: dict[str, int] = {"main": 0, "sub": 1}
+# Waking battery cameras over RTSP (research/API.md 8): per-step timeout, and
+# how long to keep the wake stream open by default.
+WAKE_RTSP_TIMEOUT = 15.0
+WAKE_HOLD_SECONDS = 30.0
 
 PATH_LOGIN = "/API/Web/Login"
 PATH_LOGOUT = "/API/Web/Logout"
@@ -317,6 +322,105 @@ def parse_channel(value: Any, default: int | None = None) -> int | None:
     if isinstance(value, str) and (m := _CHANNEL_RE.search(value)):
         return int(m.group(1))
     return default
+
+
+def _sdp_video_control(sdp: str) -> str:
+    """Return the a=control of the first video track of an SDP ('' if none)."""
+    in_video = False
+    for raw in sdp.splitlines():
+        line = raw.strip()
+        if line.startswith("m="):
+            in_video = line.startswith("m=video")
+        elif in_video and line.startswith("a=control:"):
+            return line.removeprefix("a=control:").strip()
+    return ""
+
+
+class _RtspSession:
+    """Just enough RTSP/1.0 (with Digest auth) to start a stream."""
+
+    def __init__(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        username: str,
+        password: str,
+    ) -> None:
+        self._reader = reader
+        self._writer = writer
+        self._username = username
+        self._password = password
+        self._cseq = 0
+        self._challenge: dict[str, str] | None = None
+        self.session = ""
+
+    async def send(
+        self, method: str, url: str, headers: dict[str, str] | None = None
+    ) -> None:
+        self._cseq += 1
+        lines = [
+            f"{method} {url} RTSP/1.0",
+            f"CSeq: {self._cseq}",
+            "User-Agent: ha-swann",
+        ]
+        if self._challenge is not None:
+            auth = digest_authorization(
+                self._username, self._password, method, url, self._challenge
+            )
+            lines.append(f"Authorization: {auth}")
+        if self.session:
+            lines.append(f"Session: {self.session}")
+        lines += [f"{k}: {v}" for k, v in (headers or {}).items()]
+        self._writer.write(("\r\n".join(lines) + "\r\n\r\n").encode())
+        await self._writer.drain()
+
+    async def _readline(self) -> bytes:
+        return await asyncio.wait_for(
+            self._reader.readuntil(b"\r\n"), WAKE_RTSP_TIMEOUT
+        )
+
+    async def _read_response(self) -> tuple[int, dict[str, str], str]:
+        while True:
+            first = await asyncio.wait_for(
+                self._reader.readexactly(1), WAKE_RTSP_TIMEOUT
+            )
+            if first == b"$":  # interleaved RTP frame: skip it
+                header = await self._reader.readexactly(3)
+                await self._reader.readexactly(int.from_bytes(header[1:3]))
+                continue
+            line = first + await self._readline()
+            break
+        parts = line.decode(errors="replace").split()
+        if len(parts) < 2 or not parts[0].startswith("RTSP/"):
+            raise SwannConnectionError(f"Bad RTSP response: {line!r}")
+        status = int(parts[1])
+        headers: dict[str, str] = {}
+        while text := (await self._readline()).decode(errors="replace").strip():
+            key, _, value = text.partition(":")
+            headers[key.strip().lower()] = value.strip()
+        body = ""
+        if length := int(headers.get("content-length", "0") or 0):
+            body = (await self._reader.readexactly(length)).decode(errors="replace")
+        return status, headers, body
+
+    async def request(
+        self, method: str, url: str, headers: dict[str, str] | None = None
+    ) -> tuple[int, dict[str, str], str]:
+        """Send a request; answer a Digest challenge once by retrying."""
+        await self.send(method, url, headers)
+        status, resp_headers, body = await self._read_response()
+        if status == 401 and "www-authenticate" in resp_headers:
+            self._challenge = parse_digest_challenge(resp_headers["www-authenticate"])
+            await self.send(method, url, headers)
+            status, resp_headers, body = await self._read_response()
+            if status == 401:
+                raise SwannAuthError("RTSP authentication failed")
+        return status, resp_headers, body
+
+    async def drain_forever(self) -> None:
+        """Read and discard stream data until the server closes."""
+        while await self._reader.read(65536):
+            pass
 
 
 def parse_digest_challenge(header: str) -> dict[str, str]:
@@ -622,6 +726,7 @@ class SwannClient:
         self._clock = time.monotonic
         self._page_support: dict[str, bool] = {}
         self._taken_until = 0.0
+        self.rtsp_port = RTSP_PORT
 
     @property
     def base_url(self) -> str:
@@ -639,9 +744,67 @@ class SwannClient:
         user = quote(self.username, safe="")
         password = quote(self._password, safe="")
         return (
-            f"rtsp://{user}:{password}@{self.host}:{RTSP_PORT}"
+            f"rtsp://{user}:{password}@{self.host}:{self.rtsp_port}"
             f"/rtsp/streaming?channel={channel:02d}&subtype={_RTSP_SUBTYPE[stream]}"
         )
+
+    async def async_wake(self, channel: int, hold: float = WAKE_HOLD_SECONDS) -> None:
+        """Wake a sleeping battery camera by opening its RTSP stream.
+
+        The NVR has no HTTP wake call (research/API.md 8): its web UI wakes a
+        sleeping channel just by starting playback. We do the same over RTSP:
+        DESCRIBE, SETUP and PLAY the sub stream, discard the data, and hold
+        the session for ``hold`` seconds (or until cancelled), so the camera
+        stays awake until the real viewer connects. Raises
+        SwannConnectionError (or SwannAuthError) if the exchange fails.
+        """
+        sub = _RTSP_SUBTYPE["sub"]
+        url = (
+            f"rtsp://{self.host}:{self.rtsp_port}"
+            f"/rtsp/streaming?channel={channel:02d}&subtype={sub}"
+        )
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.rtsp_port), WAKE_RTSP_TIMEOUT
+            )
+        except (OSError, TimeoutError) as err:
+            raise SwannConnectionError(f"RTSP connect failed: {err!r}") from err
+        rtsp = _RtspSession(reader, writer, self.username, self._password)
+        try:
+            await rtsp.request("OPTIONS", url)
+            status, headers, body = await rtsp.request(
+                "DESCRIBE", url, {"Accept": "application/sdp"}
+            )
+            if status != 200:
+                raise SwannConnectionError(f"RTSP DESCRIBE failed: {status}")
+            base = headers.get("content-base", url).rstrip("/")
+            control = _sdp_video_control(body)
+            if control.startswith("rtsp://"):
+                track = control
+            elif control and control != "*":
+                track = f"{base}/{control}"
+            else:
+                track = base
+            status, headers, _ = await rtsp.request(
+                "SETUP", track, {"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"}
+            )
+            if status != 200:
+                raise SwannConnectionError(f"RTSP SETUP failed: {status}")
+            rtsp.session = headers.get("session", "").split(";")[0].strip()
+            status, _, _ = await rtsp.request("PLAY", base, {"Range": "npt=0.000-"})
+            if status != 200:
+                raise SwannConnectionError(f"RTSP PLAY failed: {status}")
+            _LOGGER.debug("Woke channel %s over RTSP; holding %ss", channel, hold)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(rtsp.drain_forever(), hold)
+            with contextlib.suppress(OSError, TimeoutError):
+                await asyncio.wait_for(rtsp.send("TEARDOWN", base), 2)
+        except (OSError, TimeoutError, asyncio.IncompleteReadError) as err:
+            raise SwannConnectionError(f"RTSP wake failed: {err!r}") from err
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
     async def async_close(self) -> None:
         """Log out (sessions are limited on the NVR) and detach the HTTP session.

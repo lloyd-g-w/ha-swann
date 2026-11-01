@@ -11,12 +11,14 @@ import time
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
+    STATUS_ONLINE,
+    STATUS_SLEEP,
     Channel,
     ChannelEvents,
     CloudSettings,
@@ -41,6 +43,13 @@ EVENT_ERROR_DELAY = 10.0
 # The NVR ends sessions without a heartbeat (error no_heartbeat); the web UI
 # sends one every 10 s.
 HEARTBEAT_INTERVAL = 10.0
+# Waking a sleeping battery camera for live view: how long to wait for it to
+# report Online, how often to poll ChannelInfo meanwhile, and how long the
+# wake stream stays open in total (so the camera is still awake when the
+# viewer's own connection arrives).
+WAKE_TIMEOUT = 20.0
+WAKE_POLL_INTERVAL = 2.0
+WAKE_STREAM_HOLD = 30.0
 
 type SwannConfigEntry = ConfigEntry[SwannRuntimeData]
 
@@ -92,6 +101,12 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
         # Event loop status (for diagnostics).
         self.last_event_ok: float | None = None
         self.last_event_error: str | None = None
+        # Live-view wake-ups: one shared task per channel, and an event set
+        # whenever new data shows the channel Online.
+        self._wake_tasks: dict[int, asyncio.Task[bool]] = {}
+        self._awake_events: dict[int, asyncio.Event] = {}
+        # Unique IDs of the entities created in this setup (stale cleanup).
+        self.created_unique_ids: set[str] = set()
 
     async def _async_setup(self) -> None:
         """Log in and fetch static device info (once, before first refresh)."""
@@ -225,4 +240,116 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
         # Update in place rather than async_set_updated_data, which would keep
         # postponing the interval refresh while events are flowing.
         self.data = replace(self.data, events=events)
+        self.async_update_listeners()
+
+    # --- waking battery cameras ---------------------------------------------
+
+    def channel_status(self, channel: int) -> str | None:
+        """Live connect_status (Event/Check), else the polled one."""
+        if self.data is None:
+            return None
+        events = self.data.events.get(channel)
+        if events is not None and events.connect_status:
+            return events.connect_status
+        ch = self.data.channels.get(channel)
+        return ch.connect_status if ch is not None else None
+
+    def channel_awake(self, channel: int) -> bool:
+        """Return True if the live or the polled status is Online."""
+        if self.data is None:
+            return False
+        events = self.data.events.get(channel)
+        ch = self.data.channels.get(channel)
+        return any(
+            status is not None and status.lower() == STATUS_ONLINE
+            for status in (
+                events.connect_status if events is not None else None,
+                ch.connect_status if ch is not None else None,
+            )
+        )
+
+    def channel_asleep(self, channel: int) -> bool:
+        """Return True if the channel is a battery camera that is asleep."""
+        status = self.channel_status(channel)
+        return (
+            status is not None
+            and status.lower() == STATUS_SLEEP
+            and not self.channel_awake(channel)
+        )
+
+    @callback
+    def async_update_listeners(self) -> None:
+        """Notify entities, and wake-up waiters of channels now Online."""
+        super().async_update_listeners()
+        for channel, event in self._awake_events.items():
+            if self.channel_awake(channel):
+                event.set()
+
+    async def async_wake_channel(self, channel: int) -> bool:
+        """Wake a sleeping camera and wait until it reports Online.
+
+        Concurrent callers share one wake-up. Returns False if the camera
+        did not report Online within WAKE_TIMEOUT.
+        """
+        if not self.channel_asleep(channel):
+            return True
+        task = self._wake_tasks.get(channel)
+        if task is None or task.done():
+            task = self.config_entry.async_create_background_task(
+                self.hass, self._async_wake(channel), f"{DOMAIN} wake {channel}"
+            )
+            self._wake_tasks[channel] = task
+        return await asyncio.shield(task)
+
+    async def _async_wake(self, channel: int) -> bool:
+        event = self._awake_events.setdefault(channel, asyncio.Event())
+        event.clear()
+        _LOGGER.debug("Waking channel %s for live view", channel)
+        stream = self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_hold_wake_stream(channel, WAKE_STREAM_HOLD),
+            f"{DOMAIN} wake stream {channel}",
+        )
+        awake = False
+        deadline = time.monotonic() + WAKE_TIMEOUT
+        try:
+            while (remaining := deadline - time.monotonic()) > 0:
+                try:
+                    async with asyncio.timeout(min(WAKE_POLL_INTERVAL, remaining)):
+                        await event.wait()
+                except TimeoutError:
+                    # The event loop may be slow or backing off: poll too.
+                    await self._async_poll_channel_status()
+                if self.channel_awake(channel):
+                    awake = True
+                    break
+        finally:
+            self._awake_events.pop(channel, None)
+            if not awake:
+                stream.cancel()
+            # Once awake, the stream runs out its hold time on its own (it is
+            # an entry background task, so unloading cancels it too).
+        if awake:
+            _LOGGER.debug("Channel %s is awake", channel)
+        else:
+            _LOGGER.debug(
+                "Channel %s did not report Online within %ss", channel, WAKE_TIMEOUT
+            )
+        return awake
+
+    async def _async_hold_wake_stream(self, channel: int, hold: float) -> None:
+        try:
+            await self.client.async_wake(channel, hold)
+        except SwannError as err:
+            _LOGGER.debug("Wake stream for channel %s failed: %s", channel, err)
+
+    async def _async_poll_channel_status(self) -> None:
+        try:
+            channels = await self.client.async_get_channels()
+        except SwannError as err:
+            _LOGGER.debug("Channel poll while waking failed: %s", err)
+            return
+        if self.data is None:
+            return
+        self.data = replace(self.data, channels={ch.number: ch for ch in channels})
         self.async_update_listeners()
