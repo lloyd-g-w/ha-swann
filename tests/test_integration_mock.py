@@ -6,10 +6,12 @@ import asyncio
 from collections.abc import AsyncGenerator
 import copy
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from aiohttp.test_utils import TestServer
 from homeassistant.components.camera.const import DATA_COMPONENT as CAMERA_DATA_KEY
+from homeassistant.components.go2rtc import WebRTCProvider
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -30,7 +32,15 @@ from custom_components.swann import (
     helpers,
 )
 from custom_components.swann.api import SwannClient, SwannConnectionError
-from custom_components.swann.const import CONF_USE_HTTPS
+from custom_components.swann.camera import go2rtc_transcode_source
+from custom_components.swann.const import (
+    CONF_HW_ACCEL,
+    CONF_LIVE_VIEW_VIDEO,
+    CONF_USE_HTTPS,
+    LIVE_VIEW_AUTO,
+    LIVE_VIEW_ORIGINAL,
+    LIVE_VIEW_TRANSCODE,
+)
 
 from .conftest import USER_INPUT
 from .mock_nvr import MockNVR, fixture_data
@@ -769,3 +779,186 @@ async def test_stale_cleanup_skipped_when_nvr_unreachable(
     ):
         assert not await hass.config_entries.async_setup(entry.entry_id)
     assert registry.async_get(kept.entity_id) is not None
+
+
+# --- live view transcoding via HA's go2rtc provider (0.1.6) ---
+
+
+class FakeStreams:
+    """go2rtc REST streams API: records what HA registers."""
+
+    def __init__(self) -> None:
+        self.added: list[tuple[str, list[str]]] = []
+
+    async def list(self) -> dict:
+        return {
+            name: SimpleNamespace(producers=[SimpleNamespace(url=u) for u in urls])
+            for name, urls in self.added
+        }
+
+    async def add(self, name: str, sources: list[str]) -> None:
+        self.added.append((name, sources))
+
+
+class FakeRestClient:
+    def __init__(self, schemes: set[str]) -> None:
+        self.streams = FakeStreams()
+        self._schemes = schemes
+        self.schemes = SimpleNamespace(list=self._list_schemes)
+        self.preload = SimpleNamespace(list=self._list_preload)
+
+    async def _list_schemes(self) -> set[str]:
+        return self._schemes
+
+    async def _list_preload(self) -> dict:
+        return {}
+
+
+async def _attach_go2rtc(
+    hass: HomeAssistant, camera, schemes: set[str] | None = None
+) -> FakeRestClient:
+    """Give the camera HA's real go2rtc provider, backed by a fake REST client."""
+    rest = FakeRestClient(schemes if schemes is not None else {"rtsp", "ffmpeg"})
+    provider = WebRTCProvider(hass, "http://go2rtc", None, rest)
+    await provider.initialize()
+    camera._webrtc_provider = provider
+    return rest
+
+
+async def _offer(camera, rest: FakeRestClient, events: list[str]) -> str:
+    """Run a WebRTC offer up to go2rtc registering the stream; return its source."""
+    provider = camera.webrtc_provider
+
+    async def offer(self, cam, sdp, session_id, send_message):
+        events.append("offer")
+        await self._update_stream_source(cam)  # what go2rtc does first
+
+    with patch.object(WebRTCProvider, "async_handle_async_webrtc_offer", offer):
+        await camera.async_handle_async_webrtc_offer("sdp", "s1", lambda m: None)
+    assert provider is camera.webrtc_provider
+    return rest.streams.added[-1][1][0]
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, "transcode"),
+        ({CONF_LIVE_VIEW_VIDEO: LIVE_VIEW_AUTO}, "transcode"),
+        ({CONF_LIVE_VIEW_VIDEO: LIVE_VIEW_TRANSCODE}, "transcode"),
+        (
+            {CONF_LIVE_VIEW_VIDEO: LIVE_VIEW_TRANSCODE, CONF_HW_ACCEL: True},
+            "hardware",
+        ),
+        ({CONF_LIVE_VIEW_VIDEO: LIVE_VIEW_ORIGINAL}, "original"),
+        ({CONF_LIVE_VIEW_VIDEO: LIVE_VIEW_ORIGINAL, CONF_HW_ACCEL: True}, "original"),
+    ],
+)
+async def test_go2rtc_source_per_option(
+    hass: HomeAssistant,
+    mock_nvr: MockNVR,
+    entry: MockConfigEntry,
+    fast_wake,
+    options: dict,
+    expected: str,
+) -> None:
+    hass.config_entries.async_update_entry(entry, options=options)
+    mock_nvr.wake_delay = 0.1
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    camera = _camera(hass, "camera.syd_driveway")
+    rest = await _attach_go2rtc(hass, camera)
+    url = coordinator.client.rtsp_url(1, "main")
+
+    events: list[str] = []
+    orig_wake = camera.async_wake_for_viewing
+
+    async def wake() -> None:
+        await orig_wake()
+        events.append(f"awake={coordinator.channel_awake(1)}")
+
+    with patch.object(camera, "async_wake_for_viewing", wake):
+        source = await _offer(camera, rest, events)
+
+    assert events == ["awake=True", "offer"]  # woken before go2rtc connects
+    assert len(_plays(mock_nvr)) == 1
+    assert (
+        source
+        == {
+            "transcode": f"ffmpeg:{url}#video=h264#audio=opus",
+            "hardware": f"ffmpeg:{url}#video=h264#audio=opus#hardware",
+            "original": url,
+        }[expected]
+    )
+    # Outside the offer, stream_source() is the plain RTSP URL again
+    # (HA stream worker / HLS, snapshots, provider detection).
+    assert await camera.stream_source() == url
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_stream_source_plain_during_concurrent_offer(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry, fast_wake
+) -> None:
+    """Other callers of stream_source() never see the ffmpeg source."""
+    await _setup_real(hass, mock_nvr, entry)
+    camera = _camera(hass, "camera.syd_driveway")
+    rest = await _attach_go2rtc(hass, camera)
+    url = entry.runtime_data.coordinator.client.rtsp_url(1, "main")
+    seen_elsewhere: list[str | None] = []
+
+    async def offer(self, cam, sdp, session_id, send_message):
+        # A concurrent task (e.g. HLS) asking for the source mid-offer.
+        task = hass.async_create_task(cam.stream_source())
+        seen_elsewhere.append(await task)
+        await self._update_stream_source(cam)
+
+    with patch.object(WebRTCProvider, "async_handle_async_webrtc_offer", offer):
+        await camera.async_handle_async_webrtc_offer("sdp", "s1", lambda m: None)
+    assert seen_elsewhere == [url]
+    assert rest.streams.added[-1][1][0].startswith("ffmpeg:")
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_go2rtc_without_ffmpeg_falls_back(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry, fast_wake
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    camera = _camera(hass, "camera.syd_driveway")
+    rest = await _attach_go2rtc(hass, camera, schemes={"rtsp"})
+    url = entry.runtime_data.coordinator.client.rtsp_url(1, "main")
+    assert await _offer(camera, rest, []) == url
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_hls_stream_uses_plain_rtsp(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry, fast_wake
+) -> None:
+    """HA's stream worker (HLS fallback) is handed the RTSP URL, not ffmpeg:."""
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_LIVE_VIEW_VIDEO: LIVE_VIEW_TRANSCODE}
+    )
+    await _setup_real(hass, mock_nvr, entry)
+    camera = _camera(hass, "camera.syd_driveway")
+    await _attach_go2rtc(hass, camera)
+    url = entry.runtime_data.coordinator.client.rtsp_url(1, "main")
+    sources: list[str | None] = []
+
+    async def create_stream(self):
+        sources.append(await self.stream_source())
+
+    with patch(
+        "homeassistant.components.camera.Camera.async_create_stream", create_stream
+    ):
+        await camera.async_create_stream()
+    assert sources == [url]
+    assert len(_plays(mock_nvr)) == 1  # still woken first
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+def test_transcode_source_format() -> None:
+    url = "rtsp://u:p@nvr:554/rtsp/streaming?channel=01&subtype=1"
+    assert go2rtc_transcode_source(url) == f"ffmpeg:{url}#video=h264#audio=opus"
+    assert go2rtc_transcode_source(url, hardware=True).endswith("#hardware")

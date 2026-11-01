@@ -1,7 +1,9 @@
 homeassistant==2026.10.4
 pytest-homeassistant-custom-component==0.13.375
 # requirements of HA components this integration depends on (camera, stream, ffmpeg)
+# and of go2rtc, whose WebRTC provider the transcoding tests drive
 PyTurboJPEG==1.8.3
 av==19.0.0
 numpy==2.3.2
 ha-ffmpeg==3.2.2
+go2rtc-client==0.4.0

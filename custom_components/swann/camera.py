@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -16,10 +17,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
+    CONF_HW_ACCEL,
+    CONF_LIVE_VIEW_VIDEO,
     CONF_RTSP_TRANSPORT,
     CONF_STREAM_TYPE,
+    DEFAULT_HW_ACCEL,
+    DEFAULT_LIVE_VIEW_VIDEO,
     DEFAULT_RTSP_TRANSPORT,
     DEFAULT_STREAM_TYPE,
+    LIVE_VIEW_ORIGINAL,
 )
 from .coordinator import SwannConfigEntry, SwannCoordinator
 from .entity import SwannChannelEntity
@@ -48,6 +54,32 @@ SNAPSHOT_INTERVAL_AWAKE = 10.0
 # and, only if the user enables "Preload stream", once at HA start: all are
 # explicit requests for video, so waking there is intended.
 
+# Transcoding for live view (HA 2026.10 go2rtc integration). The cameras send
+# H.265 video and G.711 audio, which browsers can't play over WebRTC. go2rtc
+# takes its source straight from Camera.stream_source(): in
+# WebRTCProvider._update_stream_source it registers that string as the stream's
+# first producer (re-adding it whenever it differs from what go2rtc has). There
+# is no hook for an integration to pass its own go2rtc source, and the only
+# special case is a hard-coded "ffmpeg:" prefix for the generic integration.
+# But go2rtc's schemes list includes "ffmpeg" (that's what makes the generic
+# workaround work), so stream_source() may return
+#     ffmpeg:<rtsp url>#video=h264#audio=opus[#hardware]
+# and go2rtc runs ffmpeg to transcode while someone watches.
+# stream_source() has other callers that need the plain RTSP URL: HA's stream
+# worker (HLS, record), snapshots, provider detection and media browsing. So
+# the ffmpeg source is returned only to the task running our
+# async_handle_async_webrtc_offer: go2rtc's offer handler awaits stream_source()
+# in that same task. Keyed by task rather than a ContextVar, which would leak
+# into any task created during the offer.
+
+
+def go2rtc_transcode_source(rtsp_url: str, hardware: bool = False) -> str:
+    """Return a go2rtc source that transcodes to H.264 video and Opus audio."""
+    source = f"ffmpeg:{rtsp_url}#video=h264#audio=opus"
+    if hardware:
+        source += "#hardware"
+    return source
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -58,8 +90,17 @@ async def async_setup_entry(
     coordinator = entry.runtime_data.coordinator
     stream = entry.options.get(CONF_STREAM_TYPE, DEFAULT_STREAM_TYPE)
     transport = entry.options.get(CONF_RTSP_TRANSPORT, DEFAULT_RTSP_TRANSPORT)
+    live_view = entry.options.get(CONF_LIVE_VIEW_VIDEO, DEFAULT_LIVE_VIEW_VIDEO)
+    hardware = entry.options.get(CONF_HW_ACCEL, DEFAULT_HW_ACCEL)
     async_add_entities(
-        SwannCamera(coordinator, ch.number, stream, transport)
+        SwannCamera(
+            coordinator,
+            ch.number,
+            stream,
+            transport,
+            transcode=live_view != LIVE_VIEW_ORIGINAL,
+            hardware=hardware,
+        )
         for ch in coordinator.paired_channels
     )
 
@@ -76,11 +117,17 @@ class SwannCamera(SwannChannelEntity, Camera):
         channel: int,
         stream: str,
         transport: str = DEFAULT_RTSP_TRANSPORT,
+        *,
+        transcode: bool = True,
+        hardware: bool = False,
     ) -> None:
         """Initialize the camera."""
         SwannChannelEntity.__init__(self, coordinator, channel, "camera")
         Camera.__init__(self)
         self._stream_type = stream
+        self._transcode = transcode
+        self._hardware = hardware
+        self._offer_tasks: set[asyncio.Task] = set()
         self._snapshot: bytes | None = None
         self._snapshot_time = 0.0
         # Read by HA's stream worker (PyAV/ffmpeg rtsp_transport option).
@@ -90,8 +137,21 @@ class SwannCamera(SwannChannelEntity, Camera):
         self._supports_native_async_webrtc = False
 
     async def stream_source(self) -> str | None:
-        """Return the RTSP URL (never wakes the camera; see module comment)."""
-        return self.coordinator.client.rtsp_url(self.channel_number, self._stream_type)
+        """Return the stream source; never wakes the camera (see module comment).
+
+        The plain RTSP URL, except for go2rtc during a WebRTC offer with
+        transcoding on, which gets an ffmpeg source converting to H.264/Opus.
+        """
+        url = self.coordinator.client.rtsp_url(self.channel_number, self._stream_type)
+        if not (self._transcode and asyncio.current_task() in self._offer_tasks):
+            return url
+        source = go2rtc_transcode_source(url, self._hardware)
+        provider = self.webrtc_provider
+        if provider is not None and not provider.async_is_supported(source):
+            # go2rtc without ffmpeg: fall back to the original stream.
+            _LOGGER.debug("%s: go2rtc can't transcode, using RTSP", self.entity_id)
+            return url
+        return source
 
     async def async_wake_for_viewing(self) -> None:
         """Wake a sleeping battery camera and wait until it reports Online."""
@@ -111,11 +171,17 @@ class SwannCamera(SwannChannelEntity, Camera):
     async def async_handle_async_webrtc_offer(
         self, offer_sdp: str, session_id: str, send_message: WebRTCSendMessage
     ) -> None:
-        """Wake the camera before go2rtc connects to it (WebRTC)."""
+        """Wake the camera, then let go2rtc connect (transcoding if enabled)."""
         await self.async_wake_for_viewing()
-        await super().async_handle_async_webrtc_offer(
-            offer_sdp, session_id, send_message
-        )
+        task = asyncio.current_task()
+        assert task is not None
+        self._offer_tasks.add(task)
+        try:
+            await super().async_handle_async_webrtc_offer(
+                offer_sdp, session_id, send_message
+            )
+        finally:
+            self._offer_tasks.discard(task)
 
     @property
     def is_streaming(self) -> bool:

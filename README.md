@@ -33,8 +33,10 @@ Requires Home Assistant 2026.10 or newer.
 The NVR is identified by its serial number, so it can only be added once.
 
 **Options:** camera stream (main = high resolution, sub = low resolution),
-RTSP transport for Home Assistant's stream worker (TCP by default; try UDP if
-live view times out), polling interval (seconds), and *Also manage DDNS and cloud upload servers
+*Live view video* and *Use hardware acceleration for transcoding* (see
+[Live view and H.265](#live-view-and-h265)), RTSP transport for Home
+Assistant's stream worker (TCP by default; try UDP if live view times out),
+polling interval (seconds), and *Also manage DDNS and cloud upload servers
 (experimental)*, off by default (see below).
 
 ## Features
@@ -75,6 +77,39 @@ right now.
   every 10 s.
 - Streams are never preloaded. Leave *Preload stream* off in the camera's
   settings: with it on, HA wakes every camera at startup.
+
+### Live view and H.265
+
+Swann cameras stream H.265 video with G.711 audio, which most browsers can't
+play over WebRTC, and the codec can't be changed on the camera. So by default
+the integration has Home Assistant's built-in go2rtc **transcode live view to
+H.264 video and Opus audio**: live view then plays in any browser, with sound.
+
+*Live view video* option:
+
+| Value | Effect |
+|---|---|
+| Automatic (default) | Transcode H.265 cameras (currently: always, since Swann cameras are H.265) |
+| Always transcode to H.264 | Transcode |
+| Original stream | Pass the camera's H.265 through; only plays where the browser can decode H.265 (e.g. Safari, the iOS app) |
+
+- **CPU is used only while someone is watching**: one ffmpeg process per
+  open camera, stopped when the last viewer closes it.
+- **Use the sub stream** (*Camera stream: sub*) with transcoding: 1280×720
+  costs a fraction of the CPU of the 1080p main stream and looks fine on a
+  dashboard or phone.
+- **Hardware acceleration** (*Use hardware acceleration for transcoding*, off
+  by default) has ffmpeg use the GPU (VAAPI on Intel/AMD). The container needs
+  the GPU passed through, e.g. in the compose file:
+  ```yaml
+      devices:
+        - /dev/dri:/dev/dri
+  ```
+  If no usable GPU is found, go2rtc's ffmpeg may fail to start; turn it off.
+- Transcoding applies to WebRTC (go2rtc) live view only. The fallback HLS
+  player and snapshots still use the camera's original RTSP stream.
+- If you set a camera **orientation** in its settings, Home Assistant adds its
+  own H.264 conversion on top; that still works but is untested.
 
 ## The "Swann cloud" switch
 
@@ -171,9 +206,11 @@ on your router.
   the NVR sent (with debug logging on, each change is also logged as
   `Event/Check CHn: {...}`). Please attach it: these payloads have not been
   verified on real firmware yet.
-- **Live view shows nothing:** many Swann cameras stream H.265, which most
-  browsers can't play over WebRTC. Try the Home Assistant app on iOS or Safari,
-  or use Frigate/go2rtc to convert it to H.264.
+- **Live view shows nothing (black player):** the camera's H.265 isn't being
+  transcoded. Check *Live view video* isn't set to *Original stream*, and that
+  the log has no go2rtc/ffmpeg errors for that camera (see
+  [Live view and H.265](#live-view-and-h265)). Turn hardware acceleration off
+  if it's on.
 - **Live view times out:** set *RTSP transport* to UDP in the options.
 
 ## Development

@@ -26,10 +26,14 @@ import voluptuous as vol
 from . import helpers
 from .api import DeviceInfo, SwannAuthError, SwannConnectionError
 from .const import (
+    CONF_HW_ACCEL,
+    CONF_LIVE_VIEW_VIDEO,
     CONF_MANAGE_SERVERS,
     CONF_RTSP_TRANSPORT,
     CONF_STREAM_TYPE,
     CONF_USE_HTTPS,
+    DEFAULT_HW_ACCEL,
+    DEFAULT_LIVE_VIEW_VIDEO,
     DEFAULT_MANAGE_SERVERS,
     DEFAULT_PORT,
     DEFAULT_RTSP_TRANSPORT,
@@ -38,6 +42,7 @@ from .const import (
     DEFAULT_USE_HTTPS,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
+    LIVE_VIEW_VIDEO_OPTIONS,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
     RTSP_TRANSPORTS,
@@ -155,7 +160,7 @@ class SwannConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class SwannOptionsFlow(OptionsFlowWithReload):
-    """Options: stream, RTSP transport, scan interval, DDNS/server management."""
+    """Options: stream, live view video, RTSP transport, scan interval, servers."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -176,6 +181,20 @@ class SwannOptionsFlow(OptionsFlowWithReload):
                         mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
+                vol.Required(
+                    CONF_LIVE_VIEW_VIDEO,
+                    default=options.get(CONF_LIVE_VIEW_VIDEO, DEFAULT_LIVE_VIEW_VIDEO),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=LIVE_VIEW_VIDEO_OPTIONS,
+                        translation_key=CONF_LIVE_VIEW_VIDEO,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Required(
+                    CONF_HW_ACCEL,
+                    default=options.get(CONF_HW_ACCEL, DEFAULT_HW_ACCEL),
+                ): bool,
                 vol.Required(
                     CONF_RTSP_TRANSPORT,
                     default=options.get(CONF_RTSP_TRANSPORT, DEFAULT_RTSP_TRANSPORT),

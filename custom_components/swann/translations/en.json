@@ -45,11 +45,15 @@
           "stream_type": "Camera stream",
           "rtsp_transport": "RTSP transport",
           "scan_interval": "Polling interval (seconds)",
-          "manage_servers": "Also manage DDNS and cloud upload servers (experimental)"
+          "manage_servers": "Also manage DDNS and cloud upload servers (experimental)",
+          "live_view_video": "Live view video",
+          "hardware_acceleration": "Use hardware acceleration for transcoding"
         },
         "data_description": {
           "rtsp_transport": "How Home Assistant's stream worker reads the RTSP stream. Try UDP if live view times out (VLC uses UDP by default).",
-          "manage_servers": "Lets the Swann cloud switch also turn off DDNS and the Swann/Dropbox/Google Drive/AWS upload servers. Untested: the NVR may clear their saved passwords when these settings are written."
+          "manage_servers": "Lets the Swann cloud switch also turn off DDNS and the Swann/Dropbox/Google Drive/AWS upload servers. Untested: the NVR may clear their saved passwords when these settings are written.",
+          "live_view_video": "Swann cameras send H.265, which most browsers can't play in live view. Transcoding converts it to H.264 (with audio) while someone is watching, using some CPU on the Home Assistant host. The sub stream is recommended.",
+          "hardware_acceleration": "Let go2rtc's ffmpeg use the GPU (e.g. VAAPI) for transcoding. Needs /dev/dri passed to the Home Assistant container."
         }
       }
     }
@@ -65,6 +69,13 @@
       "options": {
         "tcp": "TCP",
         "udp": "UDP"
+      }
+    },
+    "live_view_video": {
+      "options": {
+        "auto": "Automatic (transcode H.265 to H.264)",
+        "transcode": "Always transcode to H.264",
+        "original": "Original stream (no transcoding)"
       }
     }
   },

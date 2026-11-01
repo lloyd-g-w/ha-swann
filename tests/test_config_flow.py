@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 import pytest
 
 from custom_components.swann.api import SwannAuthError, SwannConnectionError
@@ -100,6 +100,8 @@ async def test_options_flow(
     schema = result["data_schema"]({CONF_STREAM_TYPE: "sub", CONF_SCAN_INTERVAL: 30})
     assert schema["manage_servers"] is False  # experimental: off by default
     assert schema["rtsp_transport"] == "tcp"
+    assert schema["live_view_video"] == "auto"  # transcode H.265 by default
+    assert schema["hardware_acceleration"] is False
     assert config_entry.runtime_data.client.manage_servers is False
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -108,6 +110,8 @@ async def test_options_flow(
             CONF_SCAN_INTERVAL: 30,
             "manage_servers": True,
             "rtsp_transport": "udp",
+            "live_view_video": "original",
+            "hardware_acceleration": True,
         },
     )
     await hass.async_block_till_done()
@@ -117,6 +121,21 @@ async def test_options_flow(
         CONF_SCAN_INTERVAL: 30,
         "manage_servers": True,
         "rtsp_transport": "udp",
+        "live_view_video": "original",
+        "hardware_acceleration": True,
     }
     assert config_entry.runtime_data.client.manage_servers is True
     assert config_entry.runtime_data.coordinator.update_interval.total_seconds() == 30
+
+
+async def test_options_flow_rejects_unknown_live_view(
+    hass: HomeAssistant, fake_client: FakeSwannClient, config_entry
+):
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"], {"live_view_video": "mjpeg"}
+        )
