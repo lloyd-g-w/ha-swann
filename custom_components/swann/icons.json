@@ -18,15 +18,6 @@
         "state": {
           "on": "mdi:eye"
         }
-      },
-      "floodlight": {
-        "default": "mdi:light-flood-down"
-      },
-      "siren": {
-        "default": "mdi:alarm-light-off",
-        "state": {
-          "on": "mdi:alarm-light"
-        }
       }
     },
     "switch": {
@@ -48,6 +39,34 @@
     "sensor": {
       "cloud_connection": {
         "default": "mdi:cloud-check"
+      }
+    },
+    "event": {
+      "alert": {
+        "default": "mdi:cctv",
+        "state_attributes": {
+          "event_type": {
+            "default": "mdi:cctv",
+            "state": {
+              "motion": "mdi:motion-sensor",
+              "person": "mdi:account",
+              "vehicle": "mdi:car"
+            }
+          }
+        }
+      }
+    },
+    "light": {
+      "floodlight": {
+        "default": "mdi:light-flood-down"
+      }
+    },
+    "siren": {
+      "siren": {
+        "default": "mdi:alarm-light-off",
+        "state": {
+          "on": "mdi:alarm-light"
+        }
       }
     }
   }

@@ -79,6 +79,8 @@ class MockNVR:
         self.sets: list[tuple[str, dict[str, Any]]] = []
         self.events: list[dict[str, Any] | tuple[str, int]] = []
         self.event_bodies: list[dict[str, Any]] = []
+        # PreviewChannel/Floodlight2AudioAlarm state per "CHn" (use_real_mr4k).
+        self.deterrence: dict[str, dict[str, Any]] = {}
         # (page, page_type) -> data. page_type None = page without page_type.
         self.pages: dict[tuple[str, str | None], dict[str, Any]] = {
             ("Login/DeviceInfo", None): fixture_data("login_deviceinfo"),
@@ -128,6 +130,13 @@ class MockNVR:
         )
         self.remove_page("NetworkConfig/P2P")  # 404 on this firmware
         self.events = [fixture_data("real_mr4k_event_check_initial")]
+        # The Get answer is not captured; the UI reads the same keys as the
+        # Event/Check Floodlight_AudioAlarm object, so model it from that.
+        initial = fixture_data("real_mr4k_event_check_initial")
+        for alarm in initial["alarm_list"][0]["channel_alarm"]:
+            self.deterrence[alarm["channel"]] = copy.deepcopy(
+                alarm["Floodlight_AudioAlarm"]
+            )
 
     # --- RTSP stub: opening a stream wakes a sleeping channel ----------------
 
@@ -336,6 +345,8 @@ class MockNVR:
             return _ok()
         if path == "Event/Check":
             return self._event_check(data)
+        if path.startswith("PreviewChannel/Floodlight2AudioAlarm/"):
+            return self._deterrence(path, data)
 
         page, _, action = path.rpartition("/")
         page_type = data.get("page_type")
@@ -355,6 +366,20 @@ class MockNVR:
             stored = self.pages[key]
             new = {k: v for k, v in data.items() if k != "page_type"}
             _deep_update(stored, new)
+            return _ok()
+        return _error("not_found", 404)
+
+    def _deterrence(self, path: str, data: dict[str, Any]) -> web.Response:
+        state = self.deterrence.get(str(data.get("channel")))
+        if state is None:
+            return _error("param_error")
+        if path.endswith("/Get"):
+            return _ok(copy.deepcopy(state))
+        if path.endswith("/Set"):
+            self.sets.append((path, copy.deepcopy(data)))
+            for key, value in data.items():
+                if key not in ("channel", "operation_type"):
+                    state[key] = value
             return _ok()
         return _error("not_found", 404)
 

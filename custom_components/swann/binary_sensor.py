@@ -1,7 +1,7 @@
 """Binary sensors for Swann NVR.
 
-Per channel: motion / person / vehicle events, whether a battery camera is
-awake, and (read-only) floodlight and siren state where the camera has them.
+Per channel: motion / person / vehicle events and whether a battery camera is
+awake. Floodlight and siren are light / siren entities.
 """
 
 from __future__ import annotations
@@ -59,20 +59,6 @@ SENSORS: tuple[SwannBinarySensorDescription, ...] = (
         value_fn=lambda _, status: (
             None if status is None else status.lower() == STATUS_ONLINE
         ),
-    ),
-    SwannBinarySensorDescription(
-        key="floodlight",
-        translation_key="floodlight",
-        device_class=BinarySensorDeviceClass.LIGHT,
-        value_fn=lambda ev, _: ev.floodlight,
-        exists_fn=lambda ch: "Floodlight" in ch.abilities,
-    ),
-    SwannBinarySensorDescription(
-        key="siren",
-        translation_key="siren",
-        device_class=BinarySensorDeviceClass.SOUND,
-        value_fn=lambda ev, _: ev.siren,
-        exists_fn=lambda ch: "AudioAlarm" in ch.abilities,
     ),
 )
 

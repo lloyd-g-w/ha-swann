@@ -53,6 +53,8 @@ PATH_EVENT_CHECK = "/API/Event/Check"
 PATH_MOTION_GET = "/API/AlarmConfig/Motion/Get"
 PATH_MOTION_SET = "/API/AlarmConfig/Motion/Set"
 PATH_MOTION_RANGE = "/API/AlarmConfig/Motion/Range"
+PATH_DETERRENCE_GET = "/API/PreviewChannel/Floodlight2AudioAlarm/Get"
+PATH_DETERRENCE_SET = "/API/PreviewChannel/Floodlight2AudioAlarm/Set"
 
 # Login/ChannelInfo connect_status values (lower-cased). "Sleep" is a battery
 # camera that is asleep and wakes on PIR or a viewer; "NotPaired" is an empty
@@ -274,6 +276,54 @@ class ChannelEvents:
     connect_status: str | None = None
     floodlight: bool | None = None
     siren: bool | None = None
+    # Floodlight brightness (1-100 on real firmware) and siren level (1-10).
+    floodlight_value: int | None = None
+    floodlight_range: tuple[int, int] | None = None
+    siren_value: int | None = None
+    siren_range: tuple[int, int] | None = None
+
+
+@dataclass(slots=True)
+class _Deterrence:
+    """Last known Floodlight_AudioAlarm state of one channel."""
+
+    floodlight: bool | None = None
+    siren: bool | None = None
+    floodlight_value: int | None = None
+    floodlight_range: tuple[int, int] | None = None
+    siren_value: int | None = None
+    siren_range: tuple[int, int] | None = None
+
+    def update(self, data: dict[str, Any]) -> None:
+        """Merge a Floodlight_AudioAlarm / Floodlight2AudioAlarm payload."""
+        if isinstance(data.get("floodlight_switch"), bool):
+            self.floodlight = data["floodlight_switch"]
+        if isinstance(data.get("audioAlarm_switch"), bool):
+            self.siren = data["audioAlarm_switch"]
+        if (value := _int_or_none(data.get("floodlight_value"))) is not None:
+            self.floodlight_value = value
+        if (value := _int_or_none(data.get("audioAlarm_value"))) is not None:
+            self.siren_value = value
+        if (rng := _int_range(data.get("floodlight_value_range"))) is not None:
+            self.floodlight_range = rng
+        if (rng := _int_range(data.get("audioAlarm_value_range"))) is not None:
+            self.siren_range = rng
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _int_range(value: Any) -> tuple[int, int] | None:
+    """Return (min, max) of a ``{"min":..,"max":..}`` range, if valid."""
+    if not isinstance(value, dict):
+        return None
+    low, high = _int_or_none(value.get("min")), _int_or_none(value.get("max"))
+    if low is None or high is None or high < low:
+        return None
+    return (low, high)
 
 
 @dataclass(frozen=True, slots=True)
@@ -600,10 +650,53 @@ def _alarm_active(alarm: dict[str, Any]) -> bool:
     if isinstance(flags, dict) and any(v for v in flags.values()):
         return True
     lights = alarm.get("Floodlight_AudioAlarm")
-    return isinstance(lights, dict) and (
+    if isinstance(lights, dict) and (
         lights.get("floodlight_switch") is True
         or lights.get("audioAlarm_switch") is True
-    )
+    ):
+        return True
+    # Keys we do not model (e.g. a doorbell press on firmware we have not
+    # seen): any True or non-empty value counts, so diagnostics capture it.
+    for key, value in alarm.items():
+        if key in _KNOWN_ALARM_KEYS or key in _EVENT_NOISE_KEYS:
+            continue
+        if _non_idle(value):
+            return True
+    return False
+
+
+def _non_idle(value: Any) -> bool:
+    """Whether an unmodelled event value looks like activity (not idle)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        return any(_non_idle(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_non_idle(v) for v in value)
+    if isinstance(value, str):
+        return value.strip().lower() not in _IDLE_STRINGS
+    if isinstance(value, (int, float)):
+        return value != 0
+    return False
+
+
+_IDLE_STRINGS = frozenset({"", "0", "none", "off", "false", "close", "ok", "idle"})
+
+
+# channel_alarm keys handled above (idle values are not "activity").
+_KNOWN_ALARM_KEYS = frozenset(
+    {
+        "channel",
+        "channel_alias",
+        "motion_alarm",
+        "io_alarm",
+        "int_alarm",
+        "record_flag",
+        "Floodlight_AudioAlarm",
+        "camera_connect_status",
+        "videoloss",
+    }
+)
 
 
 def _extract_cloud_flags(page: str, data: dict[str, Any]) -> dict[str, bool]:
@@ -718,7 +811,7 @@ class SwannClient:
         self._cursor_generation = -1
         self._levels: dict[tuple[int, str], _Level] = {}
         self._status: dict[int, str] = {}
-        self._lights: dict[int, tuple[bool | None, bool | None]] = {}
+        self._lights: dict[int, _Deterrence] = {}
         self._last_alarm: dict[int, Any] = {}
         self._recent_events: deque[dict[str, Any]] = deque(maxlen=RECENT_EVENTS_MAX)
         self._motion_modes: dict[int, tuple[str, ...]] | None = None
@@ -1137,14 +1230,18 @@ class SwannClient:
         result: dict[int, ChannelEvents] = {}
         for channel in sorted(channels):
             kinds = values.get(channel, {})
-            floodlight, siren = self._lights.get(channel, (None, None))
+            lights = self._lights.get(channel) or _Deterrence()
             result[channel] = ChannelEvents(
                 motion=kinds.get("motion", False),
                 person=kinds.get("person", False),
                 vehicle=kinds.get("vehicle", False),
                 connect_status=self._status.get(channel),
-                floodlight=floodlight,
-                siren=siren,
+                floodlight=lights.floodlight,
+                siren=lights.siren,
+                floodlight_value=lights.floodlight_value,
+                floodlight_range=lights.floodlight_range,
+                siren_value=lights.siren_value,
+                siren_range=lights.siren_range,
             )
         return result
 
@@ -1217,13 +1314,7 @@ class SwannClient:
 
         lights = alarm.get("Floodlight_AudioAlarm")
         if isinstance(lights, dict):
-            old_flood, old_siren = self._lights.get(channel, (None, None))
-            flood = lights.get("floodlight_switch")
-            siren = lights.get("audioAlarm_switch")
-            self._lights[channel] = (
-                flood if isinstance(flood, bool) else old_flood,
-                siren if isinstance(siren, bool) else old_siren,
-            )
+            self._lights.setdefault(channel, _Deterrence()).update(lights)
 
         int_alarms = alarm.get("int_alarm")
         if isinstance(int_alarms, dict):
@@ -1281,6 +1372,48 @@ class SwannClient:
         chn["multiple_switch"] = mode
         data["page_type"] = "ChannelConfig"
         await self._request(PATH_MOTION_SET, strip_secrets(data))
+
+    # --- floodlight / siren (research/API.md 5.3) ----------------------------
+
+    async def async_set_floodlight(
+        self, channel: int, on: bool, brightness: int | None = None
+    ) -> None:
+        """Switch a channel's floodlight, optionally setting brightness."""
+        changes: dict[str, Any] = {"floodlight_switch": on}
+        if brightness is not None:
+            changes["floodlight_value"] = brightness
+        await self._async_set_deterrence(channel, "Floodlight", changes)
+
+    async def async_set_siren(
+        self, channel: int, on: bool, level: int | None = None
+    ) -> None:
+        """Switch a channel's siren, optionally setting its level."""
+        changes: dict[str, Any] = {"audioAlarm_switch": on}
+        if level is not None:
+            changes["audioAlarm_value"] = level
+        await self._async_set_deterrence(channel, "AudioAlarm", changes)
+
+    async def _async_set_deterrence(
+        self, channel: int, operation: str, changes: dict[str, Any]
+    ) -> None:
+        """Read-modify-write like the live view (live.js ``Te``).
+
+        The UI sends back the whole Get object plus ``channel`` and
+        ``operation_type`` (the control being changed).
+        """
+        name = f"CH{channel}"
+        data = await self._request(PATH_DETERRENCE_GET, {"channel": name})
+        if not isinstance(data, dict):
+            data = {}
+        for key, value in changes.items():
+            if key.endswith("_value") and key not in data:
+                continue  # not adjustable on this camera
+            data[key] = value
+        data["channel"] = name
+        data["operation_type"] = operation
+        await self._request(PATH_DETERRENCE_SET, data)
+        # Optimistic until Event/Check reports it.
+        self._lights.setdefault(channel, _Deterrence()).update(data)
 
     async def async_get_cloud_link_state(self) -> str | None:
         """Return SystemInfo/Base agent_cloud_link_state (e.g. "Connected")."""

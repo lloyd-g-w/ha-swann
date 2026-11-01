@@ -13,6 +13,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -50,6 +52,19 @@ HEARTBEAT_INTERVAL = 10.0
 WAKE_TIMEOUT = 20.0
 WAKE_POLL_INTERVAL = 2.0
 WAKE_STREAM_HOLD = 30.0
+# Alerts (event entities, swann_alert bus event): one per rising edge of a
+# kind on a channel, at most once per cooldown (a walk-past toggles
+# motion_alarm many times).
+ALERT_COOLDOWN = 30.0
+ALERT_TYPES = ("motion", "person", "vehicle")
+ALERT_BUS_EVENT = "swann_alert"
+ALERT_KEY = "alert"
+
+
+def alert_signal(entry_id: str) -> str:
+    """Dispatcher signal carrying ``(channel, alert_type)``."""
+    return f"{DOMAIN}_{entry_id}_alert"
+
 
 type SwannConfigEntry = ConfigEntry[SwannRuntimeData]
 
@@ -107,6 +122,9 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
         self._awake_events: dict[int, asyncio.Event] = {}
         # Unique IDs of the entities created in this setup (stale cleanup).
         self.created_unique_ids: set[str] = set()
+        # Last alert per (channel, type), on this clock (tests replace it).
+        self.alert_clock = time.monotonic
+        self._last_alert: dict[tuple[int, str], float] = {}
 
     async def _async_setup(self) -> None:
         """Log in and fetch static device info (once, before first refresh)."""
@@ -237,10 +255,72 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
         events = await self.client.async_get_channel_events()
         if self.data is None or events == self.data.events:
             return
+        previous = self.data.events
         # Update in place rather than async_set_updated_data, which would keep
         # postponing the interval refresh while events are flowing.
         self.data = replace(self.data, events=events)
         self.async_update_listeners()
+        self._async_fire_alerts(previous, events)
+
+    @callback
+    def async_refresh_events(self) -> None:
+        """Publish the client's current event state (e.g. after a command)."""
+        if self.data is None:
+            return
+        events = self.client.channel_events()
+        if events != self.data.events:
+            self.data = replace(self.data, events=events)
+            self.async_update_listeners()
+
+    # --- alerts --------------------------------------------------------------
+
+    @callback
+    def _async_fire_alerts(
+        self,
+        previous: dict[int, ChannelEvents],
+        current: dict[int, ChannelEvents],
+    ) -> None:
+        """Fire an alert for each new motion/person/vehicle (with cooldown)."""
+        now = self.alert_clock()
+        paired = {ch.number: ch for ch in self.paired_channels}
+        for channel, events in current.items():
+            if channel not in paired:
+                continue
+            before = previous.get(channel, ChannelEvents())
+            for kind in ALERT_TYPES:
+                if not getattr(events, kind) or getattr(before, kind):
+                    continue
+                last = self._last_alert.get((channel, kind))
+                if last is not None and now - last < ALERT_COOLDOWN:
+                    continue
+                self._last_alert[(channel, kind)] = now
+                self._async_alert(channel, paired[channel].name, kind)
+
+    @callback
+    def _async_alert(self, channel: int, name: str | None, kind: str) -> None:
+        from .entity import channel_identifier  # noqa: PLC0415 (import cycle)
+
+        serial = self.device.serial
+        device = dr.async_get(self.hass).async_get_device_by_identifier(
+            (DOMAIN, channel_identifier(serial, channel)), self.config_entry.entry_id
+        )
+        entity_id = er.async_get(self.hass).async_get_entity_id(
+            "event", DOMAIN, f"{serial}_ch{channel:02d}_{ALERT_KEY}"
+        )
+        _LOGGER.debug("Alert CH%d: %s", channel, kind)
+        async_dispatcher_send(
+            self.hass, alert_signal(self.config_entry.entry_id), channel, kind
+        )
+        self.hass.bus.async_fire(
+            ALERT_BUS_EVENT,
+            {
+                "device_id": device.id if device else None,
+                "entity_id": entity_id,
+                "channel": channel,
+                "name": name or f"Channel {channel}",
+                "type": kind,
+            },
+        )
 
     # --- waking battery cameras ---------------------------------------------
 

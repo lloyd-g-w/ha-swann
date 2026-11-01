@@ -89,12 +89,6 @@
       },
       "awake": {
         "name": "Awake"
-      },
-      "floodlight": {
-        "name": "Floodlight"
-      },
-      "siren": {
-        "name": "Siren"
       }
     },
     "switch": {
@@ -113,6 +107,30 @@
     "sensor": {
       "cloud_connection": {
         "name": "Cloud connection"
+      }
+    },
+    "event": {
+      "alert": {
+        "name": "Alert",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "motion": "Motion",
+              "person": "Person",
+              "vehicle": "Vehicle"
+            }
+          }
+        }
+      }
+    },
+    "light": {
+      "floodlight": {
+        "name": "Floodlight"
+      }
+    },
+    "siren": {
+      "siren": {
+        "name": "Siren"
       }
     }
   },

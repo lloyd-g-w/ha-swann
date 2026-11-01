@@ -48,8 +48,12 @@ are unpaired later are removed on the next reload.
 - **Camera** per channel, streamed from
   `rtsp://<user>:<pass>@<host>:554/rtsp/streaming?channel=NN&subtype=S`.
 - **Binary sensors** per channel: motion, person, vehicle; **Awake**
-  (diagnostic, see battery cameras below); **Floodlight** and **Siren**
-  (read-only, only on cameras that have them).
+  (diagnostic, see battery cameras below).
+- **Alert** event entity per camera (`event.<camera>_alert`), event types
+  `motion`, `person`, `vehicle`; see [Alerts and notifications](#alerts-and-notifications).
+- **Floodlight** light (on/off, brightness) and **Siren** (on/off, volume =
+  the camera's siren level 1–10), only on cameras that have them. They replace
+  the read-only floodlight/siren binary sensors of 0.1.4, which are removed.
 - **Motion detection**, depending on firmware: a **switch** (on/off) where the
   NVR has a boolean motion switch, or a **"Motion detection mode" select**
   where it has a mode instead (NVW-MR4K: e.g. `PIR_and_Person_or_Vehicle`).
@@ -59,8 +63,48 @@ are unpaired later are removed on the next reload.
   **"Cloud connection"** sensor (the NVR's own cloud link state, e.g.
   `Connected`) to check whether the cloud is really cut off.
 
-Controlling the floodlight and siren is not supported yet (planned, via
-`PreviewChannel/Floodlight2AudioAlarm`).
+The floodlight and siren use the same call as the NVR's web live view
+(`PreviewChannel/Floodlight2AudioAlarm/Set`). It is taken from the web UI code
+and not yet confirmed on every firmware; if a command fails, please open an
+issue with a diagnostics download.
+
+### Alerts and notifications
+
+Each camera has an **Alert** event entity. It fires `motion`, `person` or
+`vehicle` when the NVR reports a new detection (at most once per type and
+camera every 30 s, so one walk-past is one alert). Each alert is also sent on
+the event bus as `swann_alert` with `device_id`, `entity_id`, `channel`,
+`name` and `type`, for your own automations.
+
+**Phone notifications with a snapshot** (blueprint):
+
+1. Install the **Home Assistant companion app** on your phone (App Store or
+   Google Play), sign in to your Home Assistant, and allow notifications
+   (iOS: also allow *Time Sensitive* notifications). The phone then shows up
+   as a device of the *Mobile App* integration.
+2. Import the blueprint:
+
+   [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Flloyd-g-w%2Fha-swann%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fswann%2Fnotify_alert.yaml)
+
+   or *Settings → Automations & scenes → Blueprints → Import blueprint* with
+   `https://github.com/lloyd-g-w/ha-swann/blob/main/blueprints/automation/swann/notify_alert.yaml`.
+3. Create an automation from it: pick the Alert entities, the camera, your
+   phone, the alert types (default person, vehicle, doorbell) and a cooldown
+   (default 2 minutes). Optionally pick a media player plus a chime sound or a
+   TTS engine to announce person/doorbell alerts at home.
+
+The notification shows a snapshot (`/api/camera_proxy/<camera>`; the camera
+is awake during an alert, so it is fresh) and opens the camera when tapped.
+Doorbell alerts are sent as time-sensitive (iOS) / high priority (Android).
+
+**Doorbell (TODO):** the NVR's web UI has no event for a doorbell press, so
+the integration cannot report one yet and the Alert entity has no `doorbell`
+type. Unknown event keys are kept in the diagnostics: press the doorbell,
+then download diagnostics (*Settings → Devices → Swann NVR → Download
+diagnostics*) and open an issue with the `recent_events` part.
+
+Two-way talk is not supported: the NVR only offers it over its proprietary
+media protocol (see `research/API.md` §5.5).
 
 ### Battery cameras
 

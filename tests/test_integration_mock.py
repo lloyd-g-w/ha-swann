@@ -425,9 +425,17 @@ async def test_real_mr4k_entities(
         "Wetherill St",
     ]
     # Floodlight only where the camera has one; siren where it has AudioAlarm.
-    assert states["binary_sensor.syd_driveway_floodlight"] == STATE_OFF
-    assert "binary_sensor.sydney_door_floodlight" not in states
-    assert states["binary_sensor.sydney_door_siren"] == STATE_OFF
+    assert states["light.syd_driveway_floodlight"] == STATE_OFF
+    assert "light.sydney_door_floodlight" not in states
+    assert states["siren.sydney_door_siren"] == STATE_OFF
+    assert not [e for e in states if e.startswith("binary_sensor.") and "siren" in e]
+    # One alert event entity per paired camera.
+    assert sorted(e for e in states if e.startswith("event.")) == [
+        "event.syd_driveway_alert",
+        "event.syd_garden_alert",
+        "event.syd_side_path_alert",
+        "event.sydney_door_alert",
+    ]
     # No boolean motion switch on this firmware: a mode select instead.
     assert "switch.syd_driveway_motion_detection" not in states
     select = hass.states.get("select.syd_driveway_motion_detection_mode")
@@ -508,8 +516,8 @@ async def test_real_mr4k_live_events(
     await hass.async_block_till_done()
     assert hass.states.get("binary_sensor.syd_driveway_motion").state == STATE_ON
     assert hass.states.get("binary_sensor.syd_driveway_awake").state == STATE_ON
-    assert hass.states.get("binary_sensor.syd_side_path_floodlight").state == STATE_ON
-    assert hass.states.get("binary_sensor.syd_side_path_siren").state == STATE_ON
+    assert hass.states.get("light.syd_side_path_floodlight").state == STATE_ON
+    assert hass.states.get("siren.syd_side_path_siren").state == STATE_ON
     assert hass.states.get("camera.sydney_door").state == "unavailable"
 
     mock_nvr.events = [_real_event()]
@@ -962,3 +970,213 @@ def test_transcode_source_format() -> None:
     url = "rtsp://u:p@nvr:554/rtsp/streaming?channel=01&subtype=1"
     assert go2rtc_transcode_source(url) == f"ffmpeg:{url}#video=h264#audio=opus"
     assert go2rtc_transcode_source(url, hardware=True).endswith("#hardware")
+
+
+# --- alerts, floodlight and siren ---------------------------------------------
+
+
+async def test_alerts_fire_on_rising_edges_with_cooldown(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    now = [1000.0]
+    coordinator.alert_clock = lambda: now[0]
+    fired = []
+    hass.bus.async_listen("swann_alert", lambda event: fired.append(event.data))
+
+    async def poll(*events: dict) -> None:
+        mock_nvr.events = list(events)
+        for _ in events:
+            await coordinator.async_poll_events()
+        await hass.async_block_till_done()
+
+    # A walk-past: motion toggles several times, then a person is detected.
+    person = {"int_alarm": [{"int_subtype": "pd", "alarm_val": 1}]}
+    await poll(
+        _real_event(CH1={"motion_alarm": True}),
+        _real_event(CH1={"motion_alarm": False}),
+        _real_event(CH1={"motion_alarm": True, **person}),
+        _real_event(CH1={"motion_alarm": False}),
+    )
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        ("swann", f"{coordinator.device.serial}_ch01"), entry.entry_id
+    )
+    base = {
+        "device_id": device.id,
+        "entity_id": "event.syd_driveway_alert",
+        "channel": 1,
+        "name": "Syd Driveway",
+    }
+    assert fired == [{**base, "type": "motion"}, {**base, "type": "person"}]
+    state = hass.states.get("event.syd_driveway_alert")
+    assert state.attributes["event_type"] == "person"
+    assert state.attributes["event_types"] == ["motion", "person", "vehicle"]
+    assert state.attributes["channel"] == 1
+    assert hass.states.get("event.syd_garden_alert").state == "unknown"
+
+    # After the cooldown, a new rising edge fires again.
+    now[0] += coordinator_mod.ALERT_COOLDOWN
+    await poll(_real_event(CH1={"motion_alarm": True}))
+    assert [f["type"] for f in fired] == ["motion", "person", "motion"]
+
+
+async def test_alerts_not_fired_for_initial_state(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    mock_nvr.use_real_mr4k()
+    mock_nvr.events = [_real_event(CH1={"motion_alarm": True})]
+    fired = []
+    hass.bus.async_listen("swann_alert", lambda event: fired.append(event.data))
+    await _setup(hass, entry)
+    await hass.async_block_till_done()
+    assert fired == []
+    assert hass.states.get("event.syd_driveway_alert").state == "unknown"
+
+
+async def test_floodlight_light(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    entity_id = "light.syd_driveway_floodlight"
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_OFF
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {ATTR_ENTITY_ID: entity_id, "brightness": 255},
+        blocking=True,
+    )
+    path, body = mock_nvr.sets[-1]
+    assert path == "PreviewChannel/Floodlight2AudioAlarm/Set"
+    assert body["channel"] == "CH1"
+    assert body["operation_type"] == "Floodlight"
+    assert body["floodlight_switch"] is True
+    assert body["floodlight_value"] == 100
+    # The rest of the Get object goes back unchanged, like the live view.
+    assert body["audioAlarm_switch"] is False
+    assert body["audioAlarm_value"] == 5
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes["brightness"] == 255
+
+    await hass.services.async_call(
+        "light", "turn_off", {ATTR_ENTITY_ID: entity_id}, blocking=True
+    )
+    _, body = mock_nvr.sets[-1]
+    assert body["floodlight_switch"] is False
+    assert body["floodlight_value"] == 100  # kept from the previous Set
+    assert hass.states.get(entity_id).state == STATE_OFF
+
+    # Turning on without brightness keeps the camera's level.
+    await hass.services.async_call(
+        "light", "turn_on", {ATTR_ENTITY_ID: entity_id}, blocking=True
+    )
+    _, body = mock_nvr.sets[-1]
+    assert body["floodlight_value"] == 100
+
+    mock_nvr.next_error["PreviewChannel/Floodlight2AudioAlarm/Set"] = (
+        "param_error",
+        200,
+    )
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            "light", "turn_off", {ATTR_ENTITY_ID: entity_id}, blocking=True
+        )
+
+
+async def test_floodlight_state_from_events(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    # Real idle value 50 of 1..100.
+    state = hass.states.get("light.syd_driveway_floodlight")
+    assert state.attributes.get("brightness") is None  # off: HA hides it
+    mock_nvr.events = [
+        _real_event(
+            CH1={
+                "Floodlight_AudioAlarm": {
+                    "floodlight_switch": True,
+                    "floodlight_value": 50,
+                    "floodlight_value_range": {"min": 1, "max": 100},
+                    "audioAlarm_switch": False,
+                }
+            }
+        )
+    ]
+    await entry.runtime_data.coordinator.async_poll_events()
+    await hass.async_block_till_done()
+    state = hass.states.get("light.syd_driveway_floodlight")
+    assert state.state == STATE_ON
+    assert state.attributes["brightness"] == 127
+
+
+async def test_siren(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    entity_id = "siren.sydney_door_siren"
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_OFF
+    assert state.attributes["volume_level"] == pytest.approx(4 / 9, abs=0.001)
+    await hass.services.async_call(
+        "siren",
+        "turn_on",
+        {ATTR_ENTITY_ID: entity_id, "volume_level": 1.0},
+        blocking=True,
+    )
+    path, body = mock_nvr.sets[-1]
+    assert path == "PreviewChannel/Floodlight2AudioAlarm/Set"
+    assert body["channel"] == "CH4"
+    assert body["operation_type"] == "AudioAlarm"
+    assert body["audioAlarm_switch"] is True
+    assert body["audioAlarm_value"] == 10
+    state = hass.states.get(entity_id)
+    assert state.state == STATE_ON
+    assert state.attributes["volume_level"] == 1.0
+
+    await hass.services.async_call(
+        "siren", "turn_off", {ATTR_ENTITY_ID: entity_id}, blocking=True
+    )
+    _, body = mock_nvr.sets[-1]
+    assert body["audioAlarm_switch"] is False
+    assert body["operation_type"] == "AudioAlarm"
+    assert hass.states.get(entity_id).state == STATE_OFF
+
+
+async def test_old_floodlight_siren_binary_sensors_removed(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    mock_nvr.use_real_mr4k()
+    serial = await _serial_after_setup(hass, entry)
+    registry = er.async_get(hass)
+    old = [
+        registry.async_get_or_create(
+            "binary_sensor", "swann", f"{serial}_ch01_{key}", config_entry=entry
+        )
+        for key in ("floodlight", "siren")
+    ]
+    mock_nvr.events = [fixture_data("real_mr4k_event_check_initial")]
+    await _setup(hass, entry)
+    for entity in old:
+        assert registry.async_get(entity.entity_id) is None
+    assert hass.states.get("light.syd_driveway_floodlight") is not None
+    assert hass.states.get("siren.syd_driveway_siren") is not None
+
+
+async def test_unknown_event_keys_recorded(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    """A key we do not model (e.g. a doorbell press) reaches diagnostics."""
+    mock_nvr.use_real_mr4k()
+    mock_nvr.events = [
+        _real_event(
+            CH1={"doorbell_alarm": {"state": "Ring"}},
+            CH2={"talkback_alarm": [], "some_flag": False},
+        )
+    ]
+    await _setup(hass, entry)
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    recent = diag["recent_events"]
+    assert [e["entry"]["channel"] for e in recent] == ["CH1"]
+    assert recent[0]["entry"]["doorbell_alarm"] == {"state": "Ring"}

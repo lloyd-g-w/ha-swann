@@ -217,8 +217,26 @@ Same resource, two views selected by `page_type`:
 
 ### 5.3 Deterrence (siren / white light) [UI H paths]
 * Config: `AlarmConfig/Deterrence` (`chn_floodlight`), schedule `Schedules/Deterrence`, siren `AlarmConfig/VoiceAlarm` (`chn_siren`), voice prompts `AlarmConfig/VoicePrompts`.
-* Live manual trigger (live.js `Ae`/`Te`) [UI H]: `POST /API/PreviewChannel/Floodlight2AudioAlarm/Get` `{"version":"1.0","data":{"channel":"CH1"}}` → `{floodlight_switch, audioAlarm_switch, intelligent_switch, redBlueLight_switch, floodlight_value, floodlight_value_range, floodlight_value_adjustable, audioAlarm_value, ...}`. Set = the **same object** with `channel` and `operation_type` ∈ `"Floodlight"|"AudioAlarm"|"RedBlueLight"|"Intelligent"` (the one being toggled) and the switch flipped. Only offered when the channel `ability` has Floodlight/AudioAlarm. The live state also arrives via Event/Check `channel_alarm[].Floodlight_AudioAlarm.{floodlight_switch,audioAlarm_switch,redBlueLight_switch}` [UI H].
+* Live manual trigger (live.js `Ae`/`Te`/`Me`, URI `preview_Floodlight2AudioAlarm`) [UI H]:
+  * Get: `POST /API/PreviewChannel/Floodlight2AudioAlarm/Get` `{"version":"1.0","data":{"channel":"CH1"}}` → `{floodlight_switch, audioAlarm_switch, intelligent_switch, redBlueLight_switch, floodlight_value, floodlight_value_range, floodlight_value_adjustable, audioAlarm_value, audioAlarm_value_range, audioAlarm_value_adjustable, ...}`.
+  * Set: `POST /API/PreviewChannel/Floodlight2AudioAlarm/Set` with the **whole Get object sent back** (ranges included), plus `channel` ("CH1") and `operation_type` ∈ `"Floodlight"|"AudioAlarm"|"RedBlueLight"|"IntelligentSwitch"` (the control changed; note `IntelligentSwitch`, not `Intelligent`). `Te()` only overwrites keys already present (`null != H.x`): the four `*_switch` booleans and `floodlight_value` / `audioAlarm_value`. Debounced 100 ms in the UI. Example: `{"channel":"CH1","operation_type":"Floodlight","floodlight_switch":true,"floodlight_value":80,"audioAlarm_switch":false,"audioAlarm_value":5,...}`.
+  * Meaning: `floodlight_value` = brightness, real range 1–100 (value 50) [UI H, device H for range]. `audioAlarm_value` = siren level, real range 1–10 (value 5); ENU labels it "Siren level", so treated as volume [M]. No duration in the live trigger (duration lives in `AlarmConfig/VoiceAlarm`) [UI H].
+  * Only offered when the channel `ability` has `Floodlight` / `AudioAlarm`. `Me()` also turns the siren off while `isDualtalkWorking`.
+  * Live state: Event/Check `channel_alarm[].Floodlight_AudioAlarm.{floodlight_switch,floodlight_value,floodlight_value_range,audioAlarm_switch,audioAlarm_value,audioAlarm_value_range}` [device H, seen on the NVW-MR4K idle snapshot].
+  * Integration (light + siren entities): Get, change switch/value, add `channel` + `operation_type`, Set. **The Set has not been tried on real hardware** [UI H for the body, device unverified].
 * Manual alarm out: `PreviewChannel/ManualAlarm/Get|Set`.
+
+### 5.4 Doorbell [UI H for absence]
+* The Swann UI (webui-js) has **no Event/Check key for a doorbell press**. ENU.js only has labels: `doorbell:"Doorbell"`, motion mode `Pir_Vehicle_Person_Doorbell`, log types `DoorbellStart`/`DoorbellEnd`. live.js `bt()` reads `talkback_alarm` only to close a talk session (`talkback_close`, `error_code`).
+* raysharp-ha (third party, unverified) parses `channel_alarm[].doorbell_call` (true = ring start, false = end) "for RaySharp video-doorbell firmware" and treats `talkback_alarm[]` as an intercom call [HA, L for Swann].
+* Integration: nothing doorbell-specific. Any unmodelled non-idle key in a `channel_alarm` entry (e.g. `doorbell_call: true`) is kept in diagnostics `recent_events`, so one press plus a diagnostics download will show the real key.
+
+### 5.5 Two-way talk [UI H]
+* The UI talks through the **player plugin only**: `F.Talkback(z.SubMsgStartTalkToDevice, {talk_mode: ...})`, main message `MainMsgDualTalk` (101), and only when `f.browser.msie` (the ActiveX/NPAPI plugin). Audio goes over the proprietary media protocol on `media_port` 9000 (same channel as playback).
+* No HTTP talk API in the URI table, no WebSocket anywhere, no RTSP backchannel (no `ONVIF backchannel`/`sendonly` in the JS; untested on the RTSP server [GUESS]).
+* Abilities: `TalkHalf`, `TalkFull`, `DualTalk` (the MR4K cameras list `TalkHalf`, `TalkFull`).
+* raysharp-ha's `/API/AccessSystem/Intercom/CallSetup/Set` is SIP intercom setup on access-control devices, not camera talk.
+* So HA two-way talk would need the port-9000 media protocol reverse-engineered (or an RTSP backchannel test with go2rtc). Not implemented.
 
 ## 6. Version differences and detection
 * Request `version` is always `"1.0"` in this UI (`apiVersion.version`); it is not a firmware version. [UI H]

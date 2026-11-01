@@ -1,0 +1,202 @@
+blueprint:
+  name: Swann camera alert notification
+  description: >-
+    Send a phone notification (Home Assistant companion app, iOS and Android)
+    with a snapshot when a Swann camera reports a person, vehicle, motion or
+    doorbell alert. Tapping the notification opens the camera. Optionally
+    plays a chime or speaks a message on a media player.
+
+    Uses the Swann "Alert" event entities. The camera is awake during an
+    alert, so the snapshot is fresh.
+  domain: automation
+  source_url: https://github.com/lloyd-g-w/ha-swann/blob/main/blueprints/automation/swann/notify_alert.yaml
+  input:
+    alert_entities:
+      name: Alert entities
+      description: The Swann "Alert" event entities to watch (one or more).
+      selector:
+        entity:
+          filter:
+            - integration: swann
+              domain: event
+          multiple: true
+    camera:
+      name: Camera
+      description: Camera used for the snapshot and opened on tap.
+      selector:
+        entity:
+          filter:
+            - domain: camera
+    notify_device:
+      name: Phone
+      description: Device running the Home Assistant companion app.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    alert_types:
+      name: Alert types
+      description: Which alerts send a notification.
+      default:
+        - person
+        - vehicle
+        - doorbell
+      selector:
+        select:
+          multiple: true
+          options:
+            - label: Motion
+              value: motion
+            - label: Person
+              value: person
+            - label: Vehicle
+              value: vehicle
+            - label: Doorbell (not reported by current firmware yet)
+              value: doorbell
+    cooldown:
+      name: Cooldown
+      description: >-
+        Minimum time between notifications from this automation (Swann
+        already sends at most one alert per type and camera every 30 s).
+      default:
+        minutes: 2
+      selector:
+        duration: {}
+    media_player:
+      name: Media player (optional)
+      description: Plays a chime or speaks a message for doorbell and person alerts.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: media_player
+          multiple: true
+    chime_url:
+      name: Chime sound (optional)
+      description: >-
+        Media URL or media-source ID of a chime, e.g.
+        media-source://media_source/local/doorbell.mp3. Leave empty to use the
+        spoken message instead.
+      default: ""
+      selector:
+        text: {}
+    tts_entity:
+      name: Text-to-speech engine (optional)
+      description: Used for the spoken message when no chime sound is set.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: tts
+          multiple: false
+    tts_message:
+      name: Spoken message
+      description: "Spoken on the media player. {{ name }} and {{ type }} are available."
+      default: "{{ type | capitalize }} at the {{ name }}"
+      selector:
+        text: {}
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  # The event entity's state is the time of the last alert. Skip restores
+  # after a restart or reload (from unavailable / no previous state).
+  - trigger: state
+    entity_id: !input alert_entities
+    not_from: unavailable
+    not_to:
+      - unavailable
+      - unknown
+
+variables:
+  alert_types: !input alert_types
+  camera: !input camera
+  notify_device: !input notify_device
+  media_player: !input media_player
+  chime_url: !input chime_url
+  tts_entity: !input tts_entity
+  type: "{{ trigger.to_state.attributes.event_type }}"
+  alert_device: "{{ device_id(trigger.entity_id) }}"
+  name: >-
+    {% if alert_device %}
+      {{ device_attr(alert_device, 'name_by_user')
+         or device_attr(alert_device, 'name') }}
+    {% else %}
+      {{ state_attr(camera, 'friendly_name') or camera }}
+    {% endif %}
+  notify_service: "notify.mobile_app_{{ device_attr(notify_device, 'name') | slugify }}"
+  urgent: "{{ type == 'doorbell' }}"
+  cooldown: !input cooldown
+  cooldown_seconds: >-
+    {{ (cooldown.days | default(0)) * 86400 + (cooldown.hours | default(0)) * 3600
+       + (cooldown.minutes | default(0)) * 60 + (cooldown.seconds | default(0)) }}
+  tts_message: !input tts_message
+  titles:
+    motion: Motion
+    person: Person detected
+    vehicle: Vehicle detected
+    doorbell: Doorbell
+  messages:
+    motion: "Motion at the {{ name }}"
+    person: "Someone is at the {{ name }}"
+    vehicle: "A vehicle is at the {{ name }}"
+    doorbell: "Someone rang the {{ name }} doorbell"
+
+conditions:
+  - condition: template
+    value_template: "{{ trigger.from_state is not none and type in alert_types }}"
+  # Cooldown: last_triggered is only set when a notification was sent.
+  - condition: template
+    value_template: >-
+      {{ this.attributes.last_triggered is none
+         or (now() - this.attributes.last_triggered).total_seconds()
+            >= cooldown_seconds | float(0) }}
+
+actions:
+  - action: "{{ notify_service }}"
+    data:
+      title: "{{ titles.get(type, type | capitalize) }}"
+      message: "{{ messages.get(type, type | capitalize ~ ' at the ' ~ name) }}"
+      data:
+        image: "/api/camera_proxy/{{ camera }}"
+        # Tap opens the camera's dialog (iOS: url, Android: clickAction).
+        url: "entityId:{{ camera }}"
+        clickAction: "entityId:{{ camera }}"
+        # iOS: long-press shows the live camera.
+        entity_id: "{{ camera }}"
+        tag: "swann-{{ camera }}"
+        group: swann
+        channel: "{{ 'Swann doorbell' if urgent else 'Swann alerts' }}"
+        importance: "{{ 'high' if urgent else 'default' }}"
+        priority: "{{ 'high' if urgent else 'normal' }}"
+        ttl: "{{ 0 if urgent else 3600 }}"
+        push:
+          interruption-level: "{{ 'time-sensitive' if urgent else 'active' }}"
+  - if:
+      - condition: template
+        value_template: >-
+          {{ media_player | length > 0 and type in ['doorbell', 'person'] }}
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ chime_url | length > 0 }}"
+        then:
+          - action: media_player.play_media
+            target:
+              entity_id: "{{ media_player }}"
+            data:
+              media_content_id: "{{ chime_url }}"
+              media_content_type: music
+              announce: true
+        else:
+          - if:
+              - condition: template
+                value_template: "{{ tts_entity | length > 0 }}"
+            then:
+              - action: tts.speak
+                target:
+                  entity_id: "{{ tts_entity }}"
+                data:
+                  media_player_entity_id: "{{ media_player }}"
+                  message: "{{ tts_message }}"
