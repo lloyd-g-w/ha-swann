@@ -97,6 +97,9 @@ _PAGE_FLAGS: dict[str, tuple[str, ...]] = {
     "NetworkConfig/DDNS": ("ddns_enable",),
     "Maintenance/AutoUpgrade": ("auto_upgrade",),
 }
+# Pages whose Set bodies omit stored passwords; writing them may wipe the
+# DDNS/upload-server credentials (unverified), so they are opt-in.
+SERVER_PAGES: frozenset[str] = frozenset({"StorageConfig/Server", "NetworkConfig/DDNS"})
 # Keys never sent back to the NVR (passwords travel encrypted via TransKey).
 _SECRET_KEYS = frozenset(
     {"password", "password_confirm", "base_enc_password", "enc_password"}
@@ -432,8 +435,13 @@ class SwannClient:
         *,
         use_https: bool = True,
         verify_ssl: bool = False,
+        manage_servers: bool = False,
     ) -> None:
-        """Initialize the client."""
+        """Initialize the client.
+
+        ``manage_servers`` lets the cloud settings include DDNS and the cloud
+        upload servers (experimental, see SERVER_PAGES).
+        """
         self._session = session
         self.host = host
         self.port = port
@@ -441,6 +449,7 @@ class SwannClient:
         self._password = password
         self.use_https = use_https
         self.verify_ssl = verify_ssl
+        self.manage_servers = manage_servers
         self._token: str | None = None
         self._login_lock = asyncio.Lock()
         self._login_generation = 0
@@ -872,6 +881,8 @@ class SwannClient:
         features: dict[str, bool] = {}
         pages: dict[str, Any] = {}
         for page, page_type in _CLOUD_PAGES:
+            if page in SERVER_PAGES and not self.manage_servers:
+                continue
             if not await self._async_page_supported(page, page_type):
                 continue
             try:
@@ -897,6 +908,13 @@ class SwannClient:
         for page, wanted in by_page.items():
             if page not in page_types:
                 _LOGGER.warning("Ignoring unknown cloud setting page %s", page)
+                continue
+            if page in SERVER_PAGES and not self.manage_servers:
+                _LOGGER.warning(
+                    "Not writing %s: managing DDNS/cloud upload servers is "
+                    "disabled in the integration options",
+                    page,
+                )
                 continue
             page_type = page_types[page]
             if not await self._async_page_supported(page, page_type):

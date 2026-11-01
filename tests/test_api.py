@@ -12,6 +12,7 @@ import pytest
 
 from custom_components.swann.api import (
     EVENT_HOLD_SECONDS,
+    SERVER_PAGES,
     ChannelEvents,
     CloudSettings,
     SwannApiError,
@@ -60,10 +61,18 @@ def make_client(
     server: TestServer,
     password: str = "secret",
     clock: FakeClock | None = None,
+    *,
+    manage_servers: bool = False,
 ) -> SwannClient:
     """Create a client pointed at the mock server (plain HTTP)."""
     client = SwannClient(
-        session, "127.0.0.1", server.port, "homeassistant", password, use_https=False
+        session,
+        "127.0.0.1",
+        server.port,
+        "homeassistant",
+        password,
+        use_https=False,
+        manage_servers=manage_servers,
     )
     if clock is not None:
         client._clock = clock
@@ -312,7 +321,26 @@ def _all_off(settings: CloudSettings) -> CloudSettings:
     )
 
 
+def _server_page_traffic(mock: MockNVR) -> list[str]:
+    return [p for p, _ in mock.requests if p.startswith(tuple(SERVER_PAGES))]
+
+
+async def test_get_cloud_settings_default_excludes_servers(
+    client: SwannClient, mock: MockNVR
+) -> None:
+    settings = await client.async_get_cloud_settings()
+    f = settings.features
+    assert f["NetworkConfig/P2P|p2p_switch"] is True
+    assert f["StorageConfig/Cloud|cloud_storage"] is True
+    assert f["Maintenance/AutoUpgrade|auto_upgrade"] is True
+    assert f[f"{ALARM_PAGE}|CH1.push"] is True
+    assert not any(k.split("|", 1)[0] in SERVER_PAGES for k in f)
+    # Not even probed or read.
+    assert _server_page_traffic(mock) == []
+
+
 async def test_get_cloud_settings(client: SwannClient) -> None:
+    client.manage_servers = True
     settings = await client.async_get_cloud_settings()
     f = settings.features
     assert f["NetworkConfig/P2P|p2p_switch"] is True
@@ -328,9 +356,11 @@ async def test_get_cloud_settings(client: SwannClient) -> None:
     assert settings.raw["values"] == f
 
 
+@pytest.mark.parametrize("manage_servers", [False, True])
 async def test_cloud_off_and_restore_round_trip(
-    client: SwannClient, mock: MockNVR
+    client: SwannClient, mock: MockNVR, manage_servers: bool
 ) -> None:
+    client.manage_servers = manage_servers
     original_pages = copy.deepcopy(mock.pages)
     saved = await client.async_get_cloud_settings()
 
@@ -349,6 +379,13 @@ async def test_cloud_off_and_restore_round_trip(
         mock.page(ALARM_PAGE, "ChannelConfig")
         == original_pages[(ALARM_PAGE, "ChannelConfig")]
     )
+    server_off = (
+        mock.page("StorageConfig/Server")["swann_cloud_info"]["enable"] is False
+    )
+    ddns_off = mock.page("NetworkConfig/DDNS")["ddns_enable"] is False
+    assert server_off is ddns_off is manage_servers
+    if not manage_servers:
+        assert _server_page_traffic(mock) == []
     # P2P is written with only its switch, like the web UI.
     assert ("NetworkConfig/P2P/Set", {"p2p_switch": False}) in mock.sets
     # No password fields are ever sent.
@@ -359,6 +396,24 @@ async def test_cloud_off_and_restore_round_trip(
     restored = CloudSettings(features=dict(saved.features), raw=saved.raw)
     await client.async_set_cloud_settings(restored)
     assert mock.pages == original_pages
+    if not manage_servers:
+        assert _server_page_traffic(mock) == []
+
+
+async def test_cloud_restore_skips_servers_when_option_off(
+    client: SwannClient, mock: MockNVR, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A snapshot taken with the option on is restored only partly once it's off."""
+    client.manage_servers = True
+    saved = await client.async_get_cloud_settings()
+    await client.async_set_cloud_settings(_all_off(saved))
+    client.manage_servers = False
+    mock.requests.clear()
+    await client.async_set_cloud_settings(saved)
+    assert mock.page("NetworkConfig/P2P")["p2p_switch"] is True
+    assert mock.page("NetworkConfig/DDNS")["ddns_enable"] is False
+    assert _server_page_traffic(mock) == []
+    assert "Not writing NetworkConfig/DDNS" in caplog.text
 
 
 async def test_cloud_set_skips_unchanged_pages(
@@ -395,9 +450,10 @@ async def test_cloud_partial_support(client: SwannClient, mock: MockNVR) -> None
 async def test_cloud_restore_skips_vanished_page(
     client: SwannClient, mock: MockNVR
 ) -> None:
+    client.manage_servers = True
     saved = await client.async_get_cloud_settings()
     await client.async_set_cloud_settings(_all_off(saved))
-    other = make_client(client._session, _server_of(client))
+    other = make_client(client._session, _server_of(client), manage_servers=True)
     mock.remove_page("NetworkConfig/DDNS")
     # A fresh client (e.g. after an HA restart) restores what still exists.
     await other.async_set_cloud_settings(saved)

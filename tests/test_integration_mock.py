@@ -148,12 +148,41 @@ async def test_cloud_switch_round_trip(
     )
     assert hass.states.get(CLOUD_SWITCH).state == STATE_OFF
     assert mock_nvr.page("NetworkConfig/P2P")["p2p_switch"] is False
-    assert mock_nvr.page("StorageConfig/Server")["swann_cloud_info"]["enable"] is False
+    # DDNS and upload servers are opt-in: untouched by default.
+    assert (
+        mock_nvr.page("StorageConfig/Server")
+        == original[("StorageConfig/Server", None)]
+    )
+    assert mock_nvr.page("NetworkConfig/DDNS") == original[("NetworkConfig/DDNS", None)]
+    assert not any(
+        p.startswith(("StorageConfig/Server", "NetworkConfig/DDNS"))
+        for p, _ in mock_nvr.requests
+    )
 
     # Survives a reload (snapshot is in HA storage).
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert hass.states.get(CLOUD_SWITCH).state == STATE_OFF
+
+    await hass.services.async_call(
+        "switch", "turn_on", {ATTR_ENTITY_ID: CLOUD_SWITCH}, blocking=True
+    )
+    assert hass.states.get(CLOUD_SWITCH).state == STATE_ON
+    assert mock_nvr.pages == original
+
+
+async def test_cloud_switch_manages_servers_when_enabled(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    original = copy.deepcopy(mock_nvr.pages)
+    hass.config_entries.async_update_entry(entry, options={"manage_servers": True})
+    await _setup(hass, entry)
+
+    await hass.services.async_call(
+        "switch", "turn_off", {ATTR_ENTITY_ID: CLOUD_SWITCH}, blocking=True
+    )
+    assert mock_nvr.page("StorageConfig/Server")["swann_cloud_info"]["enable"] is False
+    assert mock_nvr.page("NetworkConfig/DDNS")["ddns_enable"] is False
 
     await hass.services.async_call(
         "switch", "turn_on", {ATTR_ENTITY_ID: CLOUD_SWITCH}, blocking=True

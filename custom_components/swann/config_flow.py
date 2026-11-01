@@ -26,8 +26,10 @@ import voluptuous as vol
 from . import helpers
 from .api import DeviceInfo, SwannAuthError, SwannConnectionError
 from .const import (
+    CONF_MANAGE_SERVERS,
     CONF_STREAM_TYPE,
     CONF_USE_HTTPS,
+    DEFAULT_MANAGE_SERVERS,
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_STREAM_TYPE,
@@ -150,7 +152,7 @@ class SwannConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class SwannOptionsFlow(OptionsFlowWithReload):
-    """Options: stream type and scan interval."""
+    """Options: stream type, scan interval, DDNS/upload-server management."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -178,6 +180,10 @@ class SwannOptionsFlow(OptionsFlowWithReload):
                     vol.Coerce(int),
                     vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL),
                 ),
+                vol.Required(
+                    CONF_MANAGE_SERVERS,
+                    default=options.get(CONF_MANAGE_SERVERS, DEFAULT_MANAGE_SERVERS),
+                ): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

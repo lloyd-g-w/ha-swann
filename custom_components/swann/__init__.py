@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 
 from . import helpers
-from .const import CLOUD_STORE_VERSION, DOMAIN
+from .const import (
+    CLOUD_STORE_VERSION,
+    CONF_MANAGE_SERVERS,
+    DEFAULT_MANAGE_SERVERS,
+    DOMAIN,
+)
 from .coordinator import SwannConfigEntry, SwannCoordinator, SwannRuntimeData
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.CAMERA, Platform.SWITCH]
@@ -21,12 +27,27 @@ def cloud_store(hass: HomeAssistant, entry_id: str) -> Store[dict]:
 async def async_setup_entry(hass: HomeAssistant, entry: SwannConfigEntry) -> bool:
     """Set up Swann NVR from a config entry."""
     client = helpers.create_client(hass, entry.data)
+    client.manage_servers = entry.options.get(
+        CONF_MANAGE_SERVERS, DEFAULT_MANAGE_SERVERS
+    )
     coordinator = SwannCoordinator(hass, entry, client)
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception:
         await client.async_close()
         raise
+    # Register the NVR first so channel devices can always link to it.
+    dev = coordinator.device
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, dev.serial)},
+        manufacturer="Swann",
+        model=dev.model,
+        name=dev.name,
+        serial_number=dev.serial,
+        sw_version=dev.firmware_version,
+        hw_version=dev.hardware_version,
+    )
     entry.runtime_data = SwannRuntimeData(
         client=client,
         coordinator=coordinator,

@@ -43,7 +43,11 @@
         "title": "Swann NVR options",
         "data": {
           "stream_type": "Camera stream",
-          "scan_interval": "Polling interval (seconds)"
+          "scan_interval": "Polling interval (seconds)",
+          "manage_servers": "Also manage DDNS and cloud upload servers (experimental)"
+        },
+        "data_description": {
+          "manage_servers": "Lets the Swann cloud switch also turn off DDNS and the Swann/Dropbox/Google Drive/AWS upload servers. Untested: the NVR may clear their saved passwords when these settings are written."
         }
       }
     }
