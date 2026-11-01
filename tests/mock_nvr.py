@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import contextlib
 import copy
 import hashlib
 import json
@@ -67,6 +68,11 @@ class MockNVR:
         self.rtsp_sdp_host = "192.168.86.152"
         self.wake_delay = 0.0
         self.wake_ok = True
+        # Whether ChannelInfo/Event/Check report a woken camera "Online"
+        # (the real NVR may keep saying "Sleep" while it streams).
+        self.wake_reports_online = True
+        # Status for DESCRIBE (e.g. "404 Not Found" to make the wake fail).
+        self.rtsp_describe_status = "200 OK"
         self.logouts = 0
         self.login_error: tuple[str, int, dict] | None = None
         self.next_error: dict[str, tuple[str, int]] = {}
@@ -170,8 +176,8 @@ class MockNVR:
         """Minimal RTSP server with Digest auth (realm 'device', like the NVR).
 
         PLAY on a sleeping channel wakes it after ``wake_delay`` seconds
-        (unless ``wake_ok`` is False), then a dummy interleaved frame is sent
-        now and then until the client goes away.
+        (unless ``wake_ok`` is False); once the camera is up, a dummy
+        interleaved frame is sent now and then until the client goes away.
         """
         self.rtsp_connections += 1
         realm, nonce = "device", "8aa253c3674b"
@@ -210,6 +216,8 @@ class MockNVR:
                         "401 Unauthorized",
                         f'WWW-Authenticate: Digest realm="{realm}",nonce="{nonce}"\r\n',
                     )
+                elif method == "DESCRIBE" and self.rtsp_describe_status != "200 OK":
+                    reply(self.rtsp_describe_status)
                 elif method == "DESCRIBE":
                     host = self.rtsp_sdp_host
                     sdp = (
@@ -243,11 +251,10 @@ class MockNVR:
                 elif method == "PLAY":
                     reply("200 OK", "Session: 12345678\r\n")
                     channel = int(re.search(r"channel=(\d+)", url).group(1))
-                    if self.wake_ok and self.channel_status(channel) == "Sleep":
+                    if self.wake_ok:
                         wake_task = asyncio.get_running_loop().create_task(
-                            self._wake_later(channel)
+                            self._stream(channel, writer)
                         )
-                    writer.write(b"$\x00\x00\x04abcd")
                 else:
                     reply("405 Method Not Allowed")
                 await writer.drain()
@@ -258,9 +265,16 @@ class MockNVR:
                 wake_task.cancel()
             writer.close()
 
-    async def _wake_later(self, channel: int) -> None:
-        await asyncio.sleep(self.wake_delay)
-        self._wake(channel)
+    async def _stream(self, channel: int, writer: asyncio.StreamWriter) -> None:
+        if self.channel_status(channel) == "Sleep":
+            await asyncio.sleep(self.wake_delay)
+            if self.wake_reports_online:
+                self._wake(channel)
+        with contextlib.suppress(ConnectionError):
+            while not writer.is_closing():
+                writer.write(b"$\x00\x00\x04abcd")
+                await writer.drain()
+                await asyncio.sleep(0.05)
 
     def _rtsp_auth_ok(
         self, headers: dict[str, str], method: str, url: str, realm: str, nonce: str

@@ -38,12 +38,16 @@ StreamType = Literal["main", "sub"]
 
 # RaySharp RTSP "subtype": 0 = main stream, 1 = sub stream.
 _RTSP_SUBTYPE: dict[str, int] = {"main": 0, "sub": 1}
-# Waking battery cameras over RTSP (research/API.md 8): per-step timeout, and
-# how long to keep the wake stream open by default.
+# Waking battery cameras over RTSP (research/API.md 8): per-step timeout, how
+# long to wait for the first media data after PLAY, and how long to keep
+# reading after it before TEARDOWN. The session is closed soon after the
+# camera sends data because the NVR may allow only one client per stream of a
+# battery camera: holding it would lock out the viewer's own connection.
 WAKE_RTSP_TIMEOUT = 15.0
+WAKE_DATA_TIMEOUT = 20.0
+WAKE_LINGER = 2.0
 # ONVIF audio backchannel (two-way talk) feature tag for RTSP Require.
 RTSP_BACKCHANNEL_REQUIRE = "www.onvif.org/ver20/backchannel"
-WAKE_HOLD_SECONDS = 30.0
 
 PATH_LOGIN = "/API/Web/Login"
 PATH_LOGOUT = "/API/Web/Logout"
@@ -406,6 +410,8 @@ class _RtspSession:
         self._challenge: dict[str, str] | None = None
         self.session = ""
         self.last_status_line = ""
+        # Interleaved media bytes skipped while waiting for a response.
+        self.media_bytes = 0
 
     async def send(
         self, method: str, url: str, headers: dict[str, str] | None = None
@@ -439,7 +445,9 @@ class _RtspSession:
             )
             if first == b"$":  # interleaved RTP frame: skip it
                 header = await self._reader.readexactly(3)
-                await self._reader.readexactly(int.from_bytes(header[1:3]))
+                length = int.from_bytes(header[1:3])
+                await self._reader.readexactly(length)
+                self.media_bytes += 4 + length
                 continue
             line = first + await self._readline()
             break
@@ -471,10 +479,9 @@ class _RtspSession:
                 raise SwannAuthError("RTSP authentication failed")
         return status, resp_headers, body
 
-    async def drain_forever(self) -> None:
-        """Read and discard stream data until the server closes."""
-        while await self._reader.read(65536):
-            pass
+    async def read_media(self) -> int:
+        """Read and discard stream data; return its size (0: server closed)."""
+        return len(await self._reader.read(65536))
 
 
 def sdp_media_summary(sdp: str) -> list[dict[str, Any]]:
@@ -813,6 +820,53 @@ def _apply_cloud_flags(
 
 
 @dataclass(slots=True)
+class WakeRecord:
+    """What happened during one RTSP wake-up of a channel (for diagnostics)."""
+
+    channel: int
+    started: float = field(default_factory=time.time)
+    steps: dict[str, int] = field(default_factory=dict)
+    first_data_after: float | None = None
+    bytes_received: int = 0
+    online_reported: bool = False
+    # pending, data (media arrived), online (status said Online first),
+    # failed (RTSP error), timeout (nothing within the wait).
+    result: str = "pending"
+    error: str | None = None
+    finished_after: float | None = None
+    teardown: bool = False
+
+    @property
+    def elapsed(self) -> float:
+        """Seconds since the wake started."""
+        return time.time() - self.started
+
+    @property
+    def succeeded(self) -> bool:
+        """Return True if the camera woke up."""
+        return self.result in ("data", "online")
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-able summary."""
+        return {
+            "channel": self.channel,
+            "started": datetime.fromtimestamp(self.started, UTC).isoformat(),
+            "steps": dict(self.steps),
+            "first_data_after": _round(self.first_data_after),
+            "bytes_received": self.bytes_received,
+            "online_reported": self.online_reported,
+            "result": self.result,
+            "error": self.error,
+            "finished_after": _round(self.finished_after),
+            "teardown": self.teardown,
+        }
+
+
+def _round(value: float | None) -> float | None:
+    return None if value is None else round(value, 2)
+
+
+@dataclass(slots=True)
 class _Level:
     """State of one alarm kind on one channel."""
 
@@ -841,6 +895,77 @@ class _Level:
 # int_subtype values (research/API.md 3.1) mapped to the sensors they drive.
 _PERSON_SUBTYPES = frozenset({"pd", "pd_vd"})
 _VEHICLE_SUBTYPES = frozenset({"vd", "pd_vd"})
+
+
+async def _rtsp_play(rtsp: _RtspSession, url: str, record: WakeRecord) -> str:
+    """OPTIONS, DESCRIBE, SETUP (video, TCP) and PLAY; return the base URL."""
+
+    async def step(
+        method: str, target: str, headers: dict[str, str] | None = None
+    ) -> tuple[dict[str, str], str]:
+        status, resp, body = await rtsp.request(method, target, headers)
+        record.steps[method] = status
+        if status != 200 and method != "OPTIONS":
+            raise SwannConnectionError(f"RTSP {method} failed: {status}")
+        return resp, body
+
+    await step("OPTIONS", url)
+    headers, body = await step("DESCRIBE", url, {"Accept": "application/sdp"})
+    base = headers.get("content-base", url).rstrip("/")
+    control = _sdp_video_control(body)
+    if control.startswith("rtsp://"):
+        track = control
+    elif control and control != "*":
+        track = f"{base}/{control}"
+    else:
+        track = base
+    headers, _ = await step(
+        "SETUP", track, {"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"}
+    )
+    rtsp.session = headers.get("session", "").split(";")[0].strip()
+    await step("PLAY", base, {"Range": "npt=0.000-"})
+    return base
+
+
+async def _rtsp_watch(
+    rtsp: _RtspSession,
+    record: WakeRecord,
+    on_data: asyncio.Event | None,
+    data_timeout: float,
+    linger: float,
+) -> None:
+    """Wait for the first media data (setting ``on_data``), then ``linger`` s."""
+
+    def got_data(size: int) -> None:
+        if size and record.first_data_after is None:
+            record.first_data_after = record.elapsed
+            if on_data is not None:
+                on_data.set()
+        record.bytes_received += size
+
+    got_data(rtsp.media_bytes)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + data_timeout
+    while record.first_data_after is None:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise SwannConnectionError(
+                f"no video from the camera within {data_timeout:g}s of PLAY"
+            )
+        with contextlib.suppress(TimeoutError):
+            size = await asyncio.wait_for(rtsp.read_media(), remaining)
+            if not size:
+                raise SwannConnectionError("NVR closed the stream before any video")
+            got_data(size)
+    end = loop.time() + linger
+    while (remaining := end - loop.time()) > 0:
+        try:
+            size = await asyncio.wait_for(rtsp.read_media(), remaining)
+        except TimeoutError:
+            break
+        if not size:
+            break
+        got_data(size)
 
 
 class SwannClient:
@@ -911,21 +1036,35 @@ class SwannClient:
             f"/rtsp/streaming?channel={channel:02d}&subtype={_RTSP_SUBTYPE[stream]}"
         )
 
-    async def async_wake(self, channel: int, hold: float = WAKE_HOLD_SECONDS) -> None:
+    async def async_wake(
+        self,
+        channel: int,
+        record: WakeRecord | None = None,
+        on_data: asyncio.Event | None = None,
+        *,
+        data_timeout: float | None = None,
+        linger: float | None = None,
+    ) -> WakeRecord:
         """Wake a sleeping battery camera by opening its RTSP stream.
 
         The NVR has no HTTP wake call (research/API.md 8): its web UI wakes a
         sleeping channel just by starting playback. We do the same over RTSP:
-        DESCRIBE, SETUP and PLAY the sub stream, discard the data, and hold
-        the session for ``hold`` seconds (or until cancelled), so the camera
-        stays awake until the real viewer connects. Raises
-        SwannConnectionError (or SwannAuthError) if the exchange fails.
+        DESCRIBE, SETUP and PLAY the sub stream and wait for the first media
+        data, which means the camera is up (the NVR may keep reporting
+        "Sleep" meanwhile). ``on_data`` is set then. After ``linger`` more
+        seconds the session is torn down so the viewer can connect. Progress
+        goes into ``record``. Raises SwannConnectionError (or SwannAuthError)
+        if the exchange fails or no data comes within ``data_timeout``.
         """
+        record = record or WakeRecord(channel)
+        data_timeout = WAKE_DATA_TIMEOUT if data_timeout is None else data_timeout
+        linger = WAKE_LINGER if linger is None else linger
         sub = _RTSP_SUBTYPE["sub"]
         url = (
             f"rtsp://{self.host}:{self.rtsp_port}"
             f"/rtsp/streaming?channel={channel:02d}&subtype={sub}"
         )
+
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.rtsp_port), WAKE_RTSP_TIMEOUT
@@ -934,40 +1073,21 @@ class SwannClient:
             raise SwannConnectionError(f"RTSP connect failed: {err!r}") from err
         rtsp = _RtspSession(reader, writer, self.username, self._password)
         try:
-            await rtsp.request("OPTIONS", url)
-            status, headers, body = await rtsp.request(
-                "DESCRIBE", url, {"Accept": "application/sdp"}
+            base = await _rtsp_play(rtsp, url, record)
+            await _rtsp_watch(rtsp, record, on_data, data_timeout, linger)
+            _LOGGER.debug(
+                "Channel %s sent video after %.1fs", channel, record.first_data_after
             )
-            if status != 200:
-                raise SwannConnectionError(f"RTSP DESCRIBE failed: {status}")
-            base = headers.get("content-base", url).rstrip("/")
-            control = _sdp_video_control(body)
-            if control.startswith("rtsp://"):
-                track = control
-            elif control and control != "*":
-                track = f"{base}/{control}"
-            else:
-                track = base
-            status, headers, _ = await rtsp.request(
-                "SETUP", track, {"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"}
-            )
-            if status != 200:
-                raise SwannConnectionError(f"RTSP SETUP failed: {status}")
-            rtsp.session = headers.get("session", "").split(";")[0].strip()
-            status, _, _ = await rtsp.request("PLAY", base, {"Range": "npt=0.000-"})
-            if status != 200:
-                raise SwannConnectionError(f"RTSP PLAY failed: {status}")
-            _LOGGER.debug("Woke channel %s over RTSP; holding %ss", channel, hold)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(rtsp.drain_forever(), hold)
             with contextlib.suppress(OSError, TimeoutError):
                 await asyncio.wait_for(rtsp.send("TEARDOWN", base), 2)
+                record.teardown = True
         except (OSError, TimeoutError, asyncio.IncompleteReadError) as err:
             raise SwannConnectionError(f"RTSP wake failed: {err!r}") from err
         finally:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+        return record
 
     async def async_rtsp_describe(
         self, channel: int, subtype: int = 1, *, backchannel: bool = False

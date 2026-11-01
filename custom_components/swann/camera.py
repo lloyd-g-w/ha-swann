@@ -49,7 +49,7 @@ SNAPSHOT_INTERVAL_AWAKE = 10.0
 #     calls stream_source() and then connects to RTSP with a ~5 s read timeout;
 #   * HLS: Camera.async_create_stream, which calls stream_source() inside a
 #     10 s timeout (CAMERA_STREAM_SOURCE_TIMEOUT), so the wake must come first.
-# Both wake the camera and wait for it to report Online before going on.
+# Both wake the camera and wait until it sends video (or reports Online).
 # async_create_stream is also used by the camera.record / play_stream services
 # and, only if the user enables "Preload stream", once at HA start: all are
 # explicit requests for video, so waking there is intended.
@@ -154,7 +154,7 @@ class SwannCamera(SwannChannelEntity, Camera):
         return source
 
     async def async_wake_for_viewing(self) -> None:
-        """Wake a sleeping battery camera and wait until it reports Online."""
+        """Wake a sleeping battery camera and wait until it sends video."""
         if not self.coordinator.channel_asleep(self.channel_number):
             return
         if not await self.coordinator.async_wake_channel(self.channel_number):

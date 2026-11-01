@@ -31,6 +31,7 @@ from .api import (
     SwannConnectionError,
     SwannError,
     SwannSessionTakenError,
+    WakeRecord,
 )
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
@@ -45,13 +46,13 @@ EVENT_ERROR_DELAY = 10.0
 # The NVR ends sessions without a heartbeat (error no_heartbeat); the web UI
 # sends one every 10 s.
 HEARTBEAT_INTERVAL = 10.0
-# Waking a sleeping battery camera for live view: how long to wait for it to
-# report Online, how often to poll ChannelInfo meanwhile, and how long the
-# wake stream stays open in total (so the camera is still awake when the
-# viewer's own connection arrives).
+# Waking a sleeping battery camera for live view: how long to wait for its
+# first video (or an Online status), and how often to poll ChannelInfo
+# meanwhile.
 WAKE_TIMEOUT = 20.0
 WAKE_POLL_INTERVAL = 2.0
-WAKE_STREAM_HOLD = 30.0
+# A camera woken this recently is not woken again for another viewer.
+WAKE_FRESH = 15.0
 # Alerts (event entities, swann_alert bus event): one per rising edge of a
 # kind on a channel, at most once per cooldown (a walk-past toggles
 # motion_alarm many times).
@@ -120,6 +121,8 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
         # whenever new data shows the channel Online.
         self._wake_tasks: dict[int, asyncio.Task[bool]] = {}
         self._awake_events: dict[int, asyncio.Event] = {}
+        # The last wake-up per channel (diagnostics: last_wake).
+        self.last_wakes: dict[int, WakeRecord] = {}
         # Unique IDs of the entities created in this setup (stale cleanup).
         self.created_unique_ids: set[str] = set()
         # Last alert per (channel, type), on this clock (tests replace it).
@@ -365,13 +368,25 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             if self.channel_awake(channel):
                 event.set()
 
-    async def async_wake_channel(self, channel: int) -> bool:
-        """Wake a sleeping camera and wait until it reports Online.
+    def recently_woken(self, channel: int, within: float = WAKE_FRESH) -> bool:
+        """Return True if a wake of the channel succeeded within ``within`` s."""
+        record = self.last_wakes.get(channel)
+        return (
+            record is not None
+            and record.succeeded
+            and record.finished_after is not None
+            and record.elapsed - record.finished_after < within
+        )
 
-        Concurrent callers share one wake-up. Returns False if the camera
-        did not report Online within WAKE_TIMEOUT.
+    async def async_wake_channel(self, channel: int) -> bool:
+        """Wake a sleeping camera and wait until it sends video or is Online.
+
+        Concurrent callers share one wake-up, and a camera woken in the last
+        WAKE_FRESH seconds is not woken again (that would open a second
+        stream while the first viewer connects). Returns False if the wake
+        failed or nothing happened within WAKE_TIMEOUT.
         """
-        if not self.channel_asleep(channel):
+        if not self.channel_asleep(channel) or self.recently_woken(channel):
             return True
         task = self._wake_tasks.get(channel)
         if task is None or task.done():
@@ -382,45 +397,86 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
         return await asyncio.shield(task)
 
     async def _async_wake(self, channel: int) -> bool:
+        record = WakeRecord(channel)
+        self.last_wakes[channel] = record
+        # Set on new data showing the channel Online, on the first video from
+        # the wake stream, and when the wake stream ends.
         event = self._awake_events.setdefault(channel, asyncio.Event())
         event.clear()
         _LOGGER.debug("Waking channel %s for live view", channel)
         stream = self.config_entry.async_create_background_task(
             self.hass,
-            self._async_hold_wake_stream(channel, WAKE_STREAM_HOLD),
+            self._async_wake_stream(channel, record, event),
             f"{DOMAIN} wake stream {channel}",
         )
-        awake = False
+        stream.add_done_callback(lambda _: event.set())
         deadline = time.monotonic() + WAKE_TIMEOUT
         try:
-            while (remaining := deadline - time.monotonic()) > 0:
+            while True:
+                if record.first_data_after is not None:
+                    record.result = "data"
+                    break
+                if self.channel_awake(channel):
+                    record.result = "online"
+                    break
+                if stream.done():
+                    record.result = "failed"
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    record.result = "timeout"
+                    record.error = record.error or (
+                        f"no video and no Online status within {WAKE_TIMEOUT:g}s"
+                    )
+                    break
                 try:
                     async with asyncio.timeout(min(WAKE_POLL_INTERVAL, remaining)):
                         await event.wait()
                 except TimeoutError:
                     # The event loop may be slow or backing off: poll too.
                     await self._async_poll_channel_status()
-                if self.channel_awake(channel):
-                    awake = True
-                    break
+                event.clear()
         finally:
             self._awake_events.pop(channel, None)
-            if not awake:
+            record.finished_after = record.elapsed
+            record.online_reported = self.channel_awake(channel)
+            if not record.succeeded:
+                # Once awake, the stream lingers briefly and tears down on its
+                # own (an entry background task: unloading cancels it too).
                 stream.cancel()
-            # Once awake, the stream runs out its hold time on its own (it is
-            # an entry background task, so unloading cancels it too).
-        if awake:
-            _LOGGER.debug("Channel %s is awake", channel)
-        else:
-            _LOGGER.debug(
-                "Channel %s did not report Online within %ss", channel, WAKE_TIMEOUT
+        name = self._channel_name(channel)
+        if record.succeeded:
+            _LOGGER.info(
+                "Woke %s (channel %s) in %.1fs: %s; RTSP %s",
+                name,
+                channel,
+                record.finished_after,
+                "video received" if record.result == "data" else "NVR reported Online",
+                _steps(record),
             )
-        return awake
+        else:
+            _LOGGER.warning(
+                "Could not wake %s (channel %s) for live view after %.1fs: %s; "
+                "RTSP %s. Download the Swann diagnostics (last_wake) for details",
+                name,
+                channel,
+                record.finished_after,
+                record.error or record.result,
+                _steps(record),
+            )
+        return record.succeeded
 
-    async def _async_hold_wake_stream(self, channel: int, hold: float) -> None:
+    def _channel_name(self, channel: int) -> str:
+        ch = self.data.channels.get(channel) if self.data else None
+        return ch.name if ch is not None and ch.name else f"Channel {channel}"
+
+    async def _async_wake_stream(
+        self, channel: int, record: WakeRecord, on_data: asyncio.Event
+    ) -> None:
         try:
-            await self.client.async_wake(channel, hold)
+            await self.client.async_wake(channel, record, on_data)
         except SwannError as err:
+            record.error = f"{type(err).__name__}: {err}"
             _LOGGER.debug("Wake stream for channel %s failed: %s", channel, err)
 
     async def _async_poll_channel_status(self) -> None:
@@ -433,3 +489,10 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             return
         self.data = replace(self.data, channels={ch.number: ch for ch in channels})
         self.async_update_listeners()
+
+
+def _steps(record: WakeRecord) -> str:
+    return (
+        " ".join(f"{method} {status}" for method, status in record.steps.items())
+        or "no reply"
+    )

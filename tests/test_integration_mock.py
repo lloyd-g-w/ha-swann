@@ -27,6 +27,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.swann import (
+    api as api_mod,
     coordinator as coordinator_mod,
     diagnostics,
     helpers,
@@ -574,7 +575,7 @@ def fast_wake():
     with (
         patch.object(coordinator_mod, "WAKE_TIMEOUT", 1.5),
         patch.object(coordinator_mod, "WAKE_POLL_INTERVAL", 0.05),
-        patch.object(coordinator_mod, "WAKE_STREAM_HOLD", 0.5),
+        patch.object(api_mod, "WAKE_LINGER", 0.2),
     ):
         yield
 
@@ -599,11 +600,11 @@ async def test_wake_before_live_view(
     assert coordinator.channel_asleep(1)
 
     assert await coordinator.async_wake_channel(1) is True
-    assert coordinator.channel_awake(1)
+    assert coordinator.last_wakes[1].result == "data"
     # Woken over RTSP on the sub stream, with Digest auth accepted.
     assert len(_plays(mock_nvr)) == 1
     assert "channel=01&subtype=1" in _plays(mock_nvr)[0]
-    # Awake now: stream_source is immediate and nothing else is sent.
+    # Just woken: stream_source is immediate and nothing else is sent.
     url = await camera.stream_source()
     assert "channel=01&subtype=0" in url
     assert await coordinator.async_wake_channel(1) is True
@@ -665,7 +666,7 @@ async def test_webrtc_offer_wakes_first(
     seen = []
 
     async def provider_offer(self, offer, session_id, send_message):
-        seen.append(coordinator.channel_awake(2))
+        seen.append(coordinator.recently_woken(2))
 
     with patch(
         "homeassistant.components.camera.Camera.async_handle_async_webrtc_offer",
@@ -675,6 +676,99 @@ async def test_webrtc_offer_wakes_first(
     assert seen == [True]
     # Still treated as a provider-backed (not native) WebRTC camera.
     assert camera._supports_native_async_webrtc is False
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_wake_on_video_while_nvr_says_sleep(
+    hass: HomeAssistant,
+    mock_nvr: MockNVR,
+    entry: MockConfigEntry,
+    fast_wake,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The first video data counts as awake even if the status stays Sleep."""
+    mock_nvr.wake_delay = 0.1
+    mock_nvr.wake_reports_online = False
+    caplog.set_level("INFO", logger="custom_components.swann")
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    assert await coordinator.async_wake_channel(1) is True
+    assert coordinator.channel_asleep(1)  # the NVR still says Sleep
+    record = coordinator.last_wakes[1]
+    assert record.result == "data"
+    assert record.steps == {"OPTIONS": 200, "DESCRIBE": 200, "SETUP": 200, "PLAY": 200}
+    assert record.first_data_after is not None
+    assert record.online_reported is False
+    assert "Woke Syd Driveway (channel 1)" in caplog.text
+    assert "video received" in caplog.text
+    # A second viewer right after does not open another stream.
+    assert await coordinator.async_wake_channel(1) is True
+    assert len(_plays(mock_nvr)) == 1
+    # The wake session lingers briefly, then tears down for the viewer.
+    async with asyncio.timeout(3):
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert record.teardown
+    assert [m for m, _ in mock_nvr.rtsp_requests][-1] == "TEARDOWN"
+    assert record.bytes_received > 0
+
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    wake = diag["last_wake"]["1"]
+    assert wake["result"] == "data"
+    assert wake["steps"]["PLAY"] == 200
+    assert wake["teardown"] is True
+    assert wake["finished_after"] < 1.5
+    assert "admin" not in json.dumps(diag["last_wake"])
+    # Woken just now, so diagnostics probe it although it reports Sleep.
+    assert sorted(diag["rtsp_probe"]) == ["1"]
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_wake_fails_fast_on_rtsp_error(
+    hass: HomeAssistant,
+    mock_nvr: MockNVR,
+    entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_nvr.rtsp_describe_status = "404 Not Found"
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    with patch.object(coordinator_mod, "WAKE_TIMEOUT", 10.0):
+        assert await coordinator.async_wake_channel(2) is False
+    assert loop.time() - start < 2  # didn't sit out the 10 s timeout
+    record = coordinator.last_wakes[2]
+    assert record.result == "failed"
+    assert record.steps == {"OPTIONS": 200, "DESCRIBE": 404}
+    assert "DESCRIBE failed: 404" in record.error
+    assert "Could not wake Syd Side Path (channel 2)" in caplog.text
+    assert "RTSP OPTIONS 200 DESCRIBE 404" in caplog.text
+    assert not coordinator.recently_woken(2)
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    assert diag["last_wake"]["2"]["result"] == "failed"
+    assert diag["rtsp_probe"] == diagnostics.RTSP_PROBE_SKIPPED
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_wake_timeout_recorded(
+    hass: HomeAssistant,
+    mock_nvr: MockNVR,
+    entry: MockConfigEntry,
+    fast_wake,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_nvr.wake_ok = False  # PLAY accepted, but no video ever comes
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    assert await coordinator.async_wake_channel(3) is False
+    record = coordinator.last_wakes[3]
+    assert record.result == "timeout"
+    assert record.steps["PLAY"] == 200
+    assert record.first_data_after is None
+    assert "no video and no Online status within 1.5s" in caplog.text
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
@@ -882,7 +976,7 @@ async def test_go2rtc_source_per_option(
 
     async def wake() -> None:
         await orig_wake()
-        events.append(f"awake={coordinator.channel_awake(1)}")
+        events.append(f"awake={coordinator.recently_woken(1)}")
 
     with patch.object(camera, "async_wake_for_viewing", wake):
         source = await _offer(camera, rest, events)

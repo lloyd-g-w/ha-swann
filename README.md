@@ -114,8 +114,11 @@ right now.
 
 - **Live view wakes the camera.** When you open a sleeping camera's live view,
   the integration first opens its RTSP stream to wake it and waits until the
-  NVR reports it awake (up to 20 s), then starts the player. Expect a few
-  seconds' wait before video appears; several viewers share one wake-up.
+  camera sends video or the NVR reports it Online (up to 20 s), closes its
+  wake stream about 2 s later, then starts the player. Expect a few seconds'
+  wait before video appears; several viewers share one wake-up. Each wake is
+  logged (`Woke Syd Driveway (channel 1) in 3.1s: …`, or a warning
+  `Could not wake …` with the reason).
 - **Snapshots never wake a camera.** While it sleeps you see the last frame
   taken while it was awake (or none yet); while awake, a fresh frame at most
   every 10 s.
@@ -255,14 +258,21 @@ on your router.
   the log has no go2rtc/ffmpeg errors for that camera (see
   [Live view and H.265](#live-view-and-h265)). Turn hardware acceleration off
   if it's on.
+- **Live view of a battery camera never starts:** look in the log for the
+  `Woke …` / `Could not wake …` line of that camera, then open the live view
+  again and download diagnostics within a minute. `last_wake` shows, per
+  camera, the RTSP status of each wake step (`OPTIONS`, `DESCRIBE`, `SETUP`,
+  `PLAY`), how many seconds the first video took (`first_data_after`), the
+  bytes received, whether the NVR reported it Online, and the error if any.
 - **Live view times out:** set *RTSP transport* to UDP in the options.
 - **Two-way talk (doorbell microphone):** not supported yet. To check whether
   your NVR could support it, open a camera's live view, wait until it plays,
-  and download diagnostics within 30 seconds. The `rtsp_probe` section asks
+  and download diagnostics within 60 seconds. The `rtsp_probe` section asks
   the NVR's RTSP server (read-only: OPTIONS and DESCRIBE, no streaming) whether
   it offers an ONVIF audio backchannel; `backchannel_offered: true` means
-  talk-back over RTSP looks possible. Only cameras that are already awake are
-  probed, so downloading diagnostics never wakes a battery camera.
+  talk-back over RTSP looks possible. Only cameras that are awake (or were
+  woken in the last minute) are probed, so downloading diagnostics never wakes
+  a battery camera.
 
 ## Development
 

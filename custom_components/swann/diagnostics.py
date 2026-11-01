@@ -175,8 +175,11 @@ async def _raw_responses(client: SwannClient) -> dict[str, Any]:
 
 RTSP_PROBE_SKIPPED = (
     "skipped: no camera awake (open a live view first, then download "
-    "diagnostics within 30 s)"
+    "diagnostics within 60 s)"
 )
+# Channels woken (by a live view) this recently are probed too: the NVR may
+# keep reporting them "Sleep" while they stream.
+RTSP_PROBE_AFTER_WAKE = 60.0
 
 
 async def _rtsp_probe_one(client: SwannClient, channel: int) -> dict[str, Any]:
@@ -212,11 +215,16 @@ async def _rtsp_probe(client: SwannClient, coordinator: Any) -> Any:
     """Probe RTSP two-way-talk support, only on cameras already awake.
 
     Opening a sleeping battery camera's stream wakes it, so diagnostics must
-    not touch channels that are asleep.
+    not touch channels that are asleep (or not recently woken).
     """
     data = coordinator.data
     awake = (
-        [n for n in sorted(data.channels) if coordinator.channel_awake(n)]
+        [
+            n
+            for n in sorted(data.channels)
+            if coordinator.channel_awake(n)
+            or coordinator.recently_woken(n, RTSP_PROBE_AFTER_WAKE)
+        ]
         if data
         else []
     )
@@ -283,6 +291,11 @@ async def async_get_config_entry_diagnostics(
         )
         # Walk past a camera, then download: shows real event payloads.
         result["recent_events"] = client.recent_events
+        # Open a live view, then download: shows how the wake-up went.
+        result["last_wake"] = {
+            str(n): record.as_dict()
+            for n, record in sorted(coordinator.last_wakes.items())
+        }
         result["raw"] = await _raw_responses(client)
         result["rtsp_probe"] = await _rtsp_probe(client, coordinator)
     else:
