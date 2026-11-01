@@ -60,7 +60,7 @@ async def test_binary_sensors(
 
     fake_client.events[2] = ChannelEvents(motion=True, vehicle=True)
     fake_client.events[1] = ChannelEvents()
-    await config_entry.runtime_data.coordinator.async_refresh()
+    await config_entry.runtime_data.coordinator.async_poll_events()
     await hass.async_block_till_done()
     assert hass.states.get("binary_sensor.garden_motion").state == STATE_ON
     assert hass.states.get("binary_sensor.garden_vehicle").state == STATE_ON

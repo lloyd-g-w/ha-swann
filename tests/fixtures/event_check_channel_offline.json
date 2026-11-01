@@ -1,0 +1,2 @@
+{"result":"success","data":{"reader_id":3,"sequence":121,"lap_number":0,"alarm_list":[{"time":"2026-11-01 16:31:00","channel_alarm":[
+ {"channel":"CH3","camera_connect_status":{"connect_status":"Offline","ability":[]},"videoloss":true}]}]}}

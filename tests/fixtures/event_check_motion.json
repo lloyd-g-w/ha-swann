@@ -1,0 +1,2 @@
+{"result":"success","data":{"reader_id":3,"sequence":118,"lap_number":0,"alarm_list":[{"time":"2026-11-01 16:30:05","channel_alarm":[
+ {"channel":"CH1","motion_alarm":true,"record_flag":{"h":"","i":"","m":"R","s":"","p":"","r":"R","t":""}}]}]}}

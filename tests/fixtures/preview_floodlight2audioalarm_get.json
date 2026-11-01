@@ -1,0 +1,1 @@
+{"result":"success","data":{"channel":"CH1","floodlight_switch":false,"floodlight_value":80,"floodlight_value_range":{"min":1,"max":100},"floodlight_value_adjustable":1,"audioAlarm_switch":false,"audioAlarm_value_adjustable":0,"redBlueLight_switch":false,"intelligent_switch":true}}

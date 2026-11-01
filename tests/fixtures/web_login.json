@@ -1,0 +1,2 @@
+{"_headers":{"X-csrftoken":"0123456789abcdef0123456789abcdef","Set-Cookie":"session=fe2a01d3c4; path=/; HttpOnly"},
+ "result":"success","data":{"last_login_time":"2026-11-01 16:20:11","last_login_ip":"192.168.86.20","pwd_remain_time":0,"fail_login_count":0,"user":"homeassistant","token":"","strength_need_check":false}}

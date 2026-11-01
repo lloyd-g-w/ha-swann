@@ -120,7 +120,7 @@ class SwannCloudSwitch(SwannEntity, SwitchEntity):
                 translation_key="command_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_refresh_cloud()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Restore the cloud settings saved when the switch was turned off."""
@@ -141,4 +141,4 @@ class SwannCloudSwitch(SwannEntity, SwitchEntity):
                 translation_placeholders={"error": str(err)},
             ) from err
         await self._store.async_remove()
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_refresh_cloud()

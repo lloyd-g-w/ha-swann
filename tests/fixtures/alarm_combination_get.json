@@ -1,0 +1,1 @@
+{"result":"success","data":{"group":[{"name":"Group1","enable":true,"PolicyConfigs":[{"UploadToCloud":[15],"UploadToFtp":[0],"ChnBuzzerOpt":[0],"LatchTimeOpt":["10s"],"SaveImg":[1]}]}]}}

@@ -133,3 +133,15 @@ def config_entry() -> MockConfigEntry:
         unique_id=SERIAL,
         data=dict(USER_INPUT),
     )
+
+
+@pytest.fixture(autouse=True)
+def no_event_loop(request) -> Generator[None]:
+    """Don't run the background Event/Check loop unless a test asks for it."""
+    if "event_loop_enabled" in request.keywords:
+        yield
+        return
+    with patch(
+        "custom_components.swann.coordinator.SwannCoordinator.async_start_events"
+    ):
+        yield

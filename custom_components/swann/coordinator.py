@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 import logging
+import time
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
@@ -18,6 +20,7 @@ from .api import (
     ChannelEvents,
     CloudSettings,
     DeviceInfo,
+    SwannApiError,
     SwannAuthError,
     SwannClient,
     SwannConnectionError,
@@ -25,6 +28,13 @@ from .api import (
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+# Cloud settings span many pages; read them rarely unless a switch changed them.
+CLOUD_REFRESH_INTERVAL = 300
+# Event/Check pacing: if the NVR answers immediately instead of holding the
+# request, wait this long between rounds. Back off on errors.
+EVENT_MIN_INTERVAL = 1.0
+EVENT_ERROR_DELAY = 10.0
 
 type SwannConfigEntry = ConfigEntry[SwannRuntimeData]
 
@@ -48,7 +58,7 @@ class SwannRuntimeData:
 
 
 class SwannCoordinator(DataUpdateCoordinator[SwannData]):
-    """Poll the NVR."""
+    """Poll channels/settings on an interval; events come from a separate loop."""
 
     config_entry: SwannConfigEntry
     device: DeviceInfo
@@ -67,6 +77,8 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             ),
         )
         self.client = client
+        self._cloud_next = 0.0
+        self._events_started = False
 
     async def _async_setup(self) -> None:
         """Log in and fetch static device info (once, before first refresh)."""
@@ -78,12 +90,28 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
         except SwannConnectionError as err:
             raise UpdateFailed(f"Error connecting to NVR: {err}") from err
 
+    async def async_refresh_cloud(self) -> None:
+        """Refresh now, including the cloud settings."""
+        self._cloud_next = 0.0
+        await self.async_refresh()
+
     async def _async_update_data(self) -> SwannData:
-        """Fetch channel, event and cloud state."""
+        """Fetch channel and (occasionally) cloud state."""
+        previous = self.data
         try:
             channels = await self.client.async_get_channels()
-            events = await self.client.async_get_channel_events()
-            cloud = await self.client.async_get_cloud_settings()
+            if previous is None:
+                # Initial event state; afterwards the event loop owns Event/Check.
+                events = await self.client.async_get_channel_events()
+            else:
+                events = previous.events
+            cloud = previous.cloud if previous else None
+            if time.monotonic() >= self._cloud_next:
+                try:
+                    cloud = await self.client.async_get_cloud_settings()
+                except SwannApiError as err:
+                    _LOGGER.debug("Cloud settings unavailable: %s", err)
+                self._cloud_next = time.monotonic() + CLOUD_REFRESH_INTERVAL
         except SwannAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except SwannConnectionError as err:
@@ -93,3 +121,38 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             events=events,
             cloud=cloud,
         )
+
+    def async_start_events(self) -> None:
+        """Start the Event/Check loop (stopped automatically on unload)."""
+        if self._events_started:
+            return
+        self._events_started = True
+        self.config_entry.async_create_background_task(
+            self.hass, self._async_event_loop(), f"{DOMAIN} events"
+        )
+
+    async def _async_event_loop(self) -> None:
+        while True:
+            started = time.monotonic()
+            delay = EVENT_MIN_INTERVAL
+            try:
+                await self.async_poll_events()
+            except SwannAuthError as err:
+                # The interval refresh turns this into a reauth prompt.
+                _LOGGER.debug("Event check: authentication failed: %s", err)
+                delay = EVENT_ERROR_DELAY
+            except SwannConnectionError as err:
+                _LOGGER.debug("Event check failed: %s", err)
+                delay = EVENT_ERROR_DELAY
+            elapsed = time.monotonic() - started
+            await asyncio.sleep(max(0.0, delay - elapsed))
+
+    async def async_poll_events(self) -> None:
+        """Run one Event/Check round and notify entities if anything changed."""
+        events = await self.client.async_get_channel_events()
+        if self.data is None or events == self.data.events:
+            return
+        # Update in place rather than async_set_updated_data, which would keep
+        # postponing the interval refresh while events are flowing.
+        self.data = replace(self.data, events=events)
+        self.async_update_listeners()

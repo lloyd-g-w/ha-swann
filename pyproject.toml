@@ -9,6 +9,7 @@ license = "MIT"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = ["event_loop_enabled: run the coordinator Event/Check background loop"]
 
 [tool.ruff]
 target-version = "py314"

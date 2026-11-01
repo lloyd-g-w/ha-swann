@@ -1,0 +1,5 @@
+{"result":"success","data":{"channel_info":{
+ "CH1":{"main_stream":"rtsp://192.168.86.152:554/rtsp/streaming?channel=01&subtype=0","sub_stream":"rtsp://192.168.86.152:554/rtsp/streaming?channel=01&subtype=1"},
+ "CH2":{"main_stream":"rtsp://192.168.86.152:554/rtsp/streaming?channel=02&subtype=0","sub_stream":"rtsp://192.168.86.152:554/rtsp/streaming?channel=02&subtype=1"},
+ "CH3":{"main_stream":"rtsp://192.168.86.152:554/rtsp/streaming?channel=03&subtype=0","sub_stream":"rtsp://192.168.86.152:554/rtsp/streaming?channel=03&subtype=1"},
+ "CH4":{"main_stream":"rtsp://192.168.86.152:554/rtsp/streaming?channel=04&subtype=0","sub_stream":"rtsp://192.168.86.152:554/rtsp/streaming?channel=04&subtype=1"}}}}

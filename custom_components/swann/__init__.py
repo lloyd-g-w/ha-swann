@@ -33,6 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SwannConfigEntry) -> boo
         cloud_store=cloud_store(hass, entry.entry_id),
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    coordinator.async_start_events()
     return True
 
 

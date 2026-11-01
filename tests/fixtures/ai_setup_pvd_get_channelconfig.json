@@ -1,0 +1,3 @@
+{"result":"success","data":{"page_type":"ChannelConfig","channel_info":{
+ "CH1":{"switch":true,"type_vehicle":true,"type_human":true,"sensitivity":50,"rule_info":[{"rule_number":"Rule1","rule_switch":true}]},
+ "CH2":{"switch":true,"type_vehicle":false,"type_human":true,"sensitivity":50,"rule_info":[]}}}}

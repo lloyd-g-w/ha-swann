@@ -1,0 +1,6 @@
+{"result":"success","data":{"channel_param":{"items":[
+ {"channel":"CH1","channel_name":"Driveway","channel_alias":"","connect_status":"Online","model":"NHD-1200BE","ability":["md","pd","vd","Floodlight","AudioAlarm","Talk"]},
+ {"channel":"CH2","channel_name":"Front Door","channel_alias":"","connect_status":"Online","model":"NHD-1200BE","ability":["md","pd","vd","Floodlight","AudioAlarm"]},
+ {"channel":"CH3","channel_name":"Backyard","channel_alias":"","connect_status":"Online","model":"NHD-1200D","ability":["md","pd","vd"]},
+ {"channel":"CH4","channel_name":"Garage","channel_alias":"","connect_status":"Offline","model":"","ability":[]}
+]}}}

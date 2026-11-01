@@ -1,0 +1,5 @@
+{"result":"success","data":{"page_type":"ChannelConfig","channel_info":{
+ "CH1":{"copy_ch":"0","switch":true,"sensitivity":4,"smart_moiton_detection":true,"target_type":["Person","Vehicle"],"intervals":"10s","light_linkage":false},
+ "CH2":{"copy_ch":"0","switch":true,"sensitivity":4,"smart_moiton_detection":true,"target_type":["Person"],"intervals":"10s","light_linkage":false},
+ "CH3":{"copy_ch":"0","switch":true,"sensitivity":5,"smart_moiton_detection":false,"intervals":"10s"},
+ "CH4":{"copy_ch":"0","switch":false,"sensitivity":4,"intervals":"10s"}}}}
