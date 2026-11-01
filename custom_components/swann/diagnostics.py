@@ -100,10 +100,27 @@ def _scrub_values(value: Any) -> Any:
     return value
 
 
+# Long numeric arrays (motion region grids: 1600 cells per channel) are
+# summarised; they made diagnostics files hundreds of KB.
+_MAX_NUMBER_LIST = 32
+
+
+def _shorten(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _shorten(v) for k, v in value.items()}
+    if isinstance(value, list):
+        if len(value) > _MAX_NUMBER_LIST and all(
+            isinstance(v, int | float) and not isinstance(v, bool) for v in value
+        ):
+            return f"[{len(value)} numbers]"
+        return [_shorten(v) for v in value]
+    return value
+
+
 def redact(data: Any) -> Any:
     """Redact identifying keys (exact or substring) and IP/MAC values."""
     keys = _REDACT_KEYS | _matching_keys(data, set())
-    return _scrub_values(async_redact_data(data, keys))
+    return _scrub_values(async_redact_data(_shorten(data), keys))
 
 
 async def _capture(call: Callable[[], Awaitable[Any]]) -> dict[str, Any]:
@@ -120,6 +137,16 @@ async def _raw_responses(client: SwannClient) -> dict[str, Any]:
         ("system_info", "SystemInfo/Base/Get", None),
         ("channel_info", "Login/ChannelInfo/Get", None),
         ("motion_config", "AlarmConfig/Motion/Get", {"page_type": "ChannelConfig"}),
+        ("motion_range", "AlarmConfig/Motion/Range", {"page_type": "ChannelConfig"}),
+        # Cloud-related pages whose shapes we haven't seen on real firmware.
+        ("storage_cloud", "StorageConfig/Cloud/Get", None),
+        ("auto_upgrade", "Maintenance/AutoUpgrade/Get", None),
+        ("netbase", "NetworkConfig/NetBase/Get", None),
+        (
+            "intelligent_pd",
+            "AlarmConfig/Intelligent/PD/Get",
+            {"page_type": "AlarmConfig"},
+        ),
     ):
         raw[name] = await _capture(
             lambda p=path, b=body: client.async_raw_request(
@@ -198,6 +225,12 @@ async def async_get_config_entry_diagnostics(
             dict(data.cloud.features) if data and data.cloud else None
         )
         result["cloud_page_support"] = client.cloud_page_support
+        result["cloud_link"] = data.cloud_link if data else None
+        result["motion_modes"] = (
+            {str(n): list(m) for n, m in data.motion_modes.items()} if data else None
+        )
+        # Walk past a camera, then download: shows real event payloads.
+        result["recent_events"] = client.recent_events
         result["raw"] = await _raw_responses(client)
     else:
         # Not loaded (e.g. setup keeps failing): probe with a temporary client.

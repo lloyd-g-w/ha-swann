@@ -1,12 +1,54 @@
 {
   "entity": {
     "binary_sensor": {
-      "person": { "default": "mdi:account-off", "state": { "on": "mdi:account" } },
-      "vehicle": { "default": "mdi:car-off", "state": { "on": "mdi:car" } }
+      "person": {
+        "default": "mdi:account-off",
+        "state": {
+          "on": "mdi:account"
+        }
+      },
+      "vehicle": {
+        "default": "mdi:car-off",
+        "state": {
+          "on": "mdi:car"
+        }
+      },
+      "awake": {
+        "default": "mdi:sleep",
+        "state": {
+          "on": "mdi:eye"
+        }
+      },
+      "floodlight": {
+        "default": "mdi:light-flood-down"
+      },
+      "siren": {
+        "default": "mdi:alarm-light-off",
+        "state": {
+          "on": "mdi:alarm-light"
+        }
+      }
     },
     "switch": {
-      "motion_detection": { "default": "mdi:motion-sensor" },
-      "cloud": { "default": "mdi:cloud", "state": { "off": "mdi:cloud-off" } }
+      "motion_detection": {
+        "default": "mdi:motion-sensor"
+      },
+      "cloud": {
+        "default": "mdi:cloud",
+        "state": {
+          "off": "mdi:cloud-off"
+        }
+      }
+    },
+    "select": {
+      "motion_mode": {
+        "default": "mdi:motion-sensor"
+      }
+    },
+    "sensor": {
+      "cloud_connection": {
+        "default": "mdi:cloud-check"
+      }
     }
   }
 }

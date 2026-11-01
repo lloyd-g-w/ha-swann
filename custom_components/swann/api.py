@@ -15,8 +15,11 @@ wanted keys, Set it back without password fields.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 import hashlib
+import json
 import logging
 import os
 import re
@@ -44,6 +47,28 @@ PATH_CHANNEL_INFO = "/API/Login/ChannelInfo/Get"
 PATH_EVENT_CHECK = "/API/Event/Check"
 PATH_MOTION_GET = "/API/AlarmConfig/Motion/Get"
 PATH_MOTION_SET = "/API/AlarmConfig/Motion/Set"
+PATH_MOTION_RANGE = "/API/AlarmConfig/Motion/Range"
+
+# Login/ChannelInfo connect_status values (lower-cased). "Sleep" is a battery
+# camera that is asleep and wakes on PIR or a viewer; "NotPaired" is an empty
+# channel slot. Anything else (e.g. "Offline") is unavailable.
+STATUS_ONLINE = "online"
+STATUS_SLEEP = "sleep"
+STATUS_NOT_PAIRED = "notpaired"
+_AVAILABLE_STATUSES = frozenset({STATUS_ONLINE, STATUS_SLEEP})
+# How many recent non-idle Event/Check channel entries to keep (diagnostics).
+RECENT_EVENTS_MAX = 20
+# Keys in Event/Check channel entries that never carry event state.
+_EVENT_NOISE_KEYS = frozenset(
+    {
+        "ability",
+        "abilityEx",
+        "alarm_in_num",
+        "alarm_out_num",
+        "channel_name",
+        "hide_instant_playback",
+    }
+)
 
 # Pages holding cloud-related flags, with the page_type their Get/Set need.
 # Schedules/Cloud and RemoteReport are deliberately left alone.
@@ -67,6 +92,10 @@ _ALARM_PAGES: tuple[str, ...] = (
     "AI/Setup/LPD",
 )
 _CLOUD_PAGES: tuple[tuple[str, str | None], ...] = (
+    # NVW-MR4K V8.2.2 has no P2P page; its web UI sets p2p_switch on
+    # NetworkConfig/NetBase instead, but with an unknown page_type and the port
+    # and WAN settings in the same body. Not touched until diagnostics show
+    # its real shape (diagnostics capture the raw NetBase Get).
     ("NetworkConfig/P2P", None),
     ("StorageConfig/Cloud", None),
     ("StorageConfig/Server", None),
@@ -206,6 +235,27 @@ class Channel:
     online: bool = True
     motion_detection_enabled: bool = False
     abilities: tuple[str, ...] = ()
+    # Raw connect_status as reported (e.g. "Online", "Sleep", "NotPaired").
+    connect_status: str = "Online"
+    # AlarmConfig/Motion multiple_switch (firmware without a boolean switch).
+    motion_mode: str | None = None
+    # Whether the motion config has a boolean ``switch`` for this channel.
+    has_motion_switch: bool = True
+
+    @property
+    def paired(self) -> bool:
+        """False for empty channel slots (no camera paired)."""
+        return self.connect_status.lower() != STATUS_NOT_PAIRED
+
+    @property
+    def awake(self) -> bool:
+        """True when the camera is online, False when asleep or offline."""
+        return self.connect_status.lower() == STATUS_ONLINE
+
+
+def status_available(connect_status: str) -> bool:
+    """Return whether a channel with this connect_status is usable."""
+    return connect_status.lower() in _AVAILABLE_STATUSES
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +265,10 @@ class ChannelEvents:
     motion: bool = False
     person: bool = False
     vehicle: bool = False
+    # Live connect_status from Event/Check (None until reported).
+    connect_status: str | None = None
+    floodlight: bool | None = None
+    siren: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +405,103 @@ def strip_secrets(value: Any) -> Any:
     return value
 
 
+def _motion_by_channel(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """Return AlarmConfig/Motion channel_info keyed by channel number."""
+    result: dict[int, dict[str, Any]] = {}
+    for key, cfg in (data.get("channel_info") or {}).items():
+        channel = parse_channel(key)
+        if channel is not None and isinstance(cfg, dict):
+            result[channel] = cfg
+    return result
+
+
+def _range_options(value: Any) -> tuple[str, ...]:
+    """Return the string options of a Range entry (``items``/``enum`` list)."""
+    if isinstance(value, dict):
+        for key in ("items", "enum", "options"):
+            items = value.get(key)
+            if isinstance(items, list) and all(isinstance(i, str) for i in items):
+                return tuple(items)
+    if isinstance(value, list) and value and all(isinstance(i, str) for i in value):
+        return tuple(value)
+    return ()
+
+
+def _parse_motion_modes(data: Any) -> dict[int, tuple[str, ...]]:
+    """Find ``multiple_switch`` options in a Motion Range response.
+
+    Per-channel entries are keyed ``CHn`` at any depth; a ``multiple_switch``
+    outside any channel applies to all channels (key 0).
+    """
+    found: dict[int, tuple[str, ...]] = {}
+
+    def walk(node: Any, channel: int) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "multiple_switch":
+                    options = _range_options(value)
+                    if options:
+                        found.setdefault(channel, options)
+                    continue
+                sub = channel
+                if isinstance(key, str) and re.fullmatch(r"CH\d+", key):
+                    sub = parse_channel(key) or channel
+                walk(value, sub)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, channel)
+
+    walk(data, 0)
+    return found
+
+
+def _drop_ranges(value: Any) -> Any:
+    """Return a copy without ``*_range`` keys (static limits, not state)."""
+    if isinstance(value, dict):
+        return {
+            k: _drop_ranges(v)
+            for k, v in value.items()
+            if not (isinstance(k, str) and k.endswith("_range"))
+        }
+    if isinstance(value, list):
+        return [_drop_ranges(v) for v in value]
+    return value
+
+
+def _event_signature(alarm: dict[str, Any]) -> str:
+    """Compact form of a channel entry without static noise, for comparison."""
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                k: clean(v)
+                for k, v in value.items()
+                if k not in _EVENT_NOISE_KEYS
+                and not (isinstance(k, str) and k.endswith("_range"))
+            }
+        if isinstance(value, list):
+            return [clean(v) for v in value]
+        return value
+
+    return json.dumps(clean(alarm), sort_keys=True, default=str)
+
+
+def _alarm_active(alarm: dict[str, Any]) -> bool:
+    """Whether a channel entry reports anything beyond idle state."""
+    if alarm.get("motion_alarm") is True or alarm.get("io_alarm") is True:
+        return True
+    if alarm.get("int_alarm"):
+        return True  # any AI payload (start or end) is worth keeping
+    flags = alarm.get("record_flag")
+    if isinstance(flags, dict) and any(v for v in flags.values()):
+        return True
+    lights = alarm.get("Floodlight_AudioAlarm")
+    return isinstance(lights, dict) and (
+        lights.get("floodlight_switch") is True
+        or lights.get("audioAlarm_switch") is True
+    )
+
+
 def _extract_cloud_flags(page: str, data: dict[str, Any]) -> dict[str, bool]:
     """Return ``{"<page>|<location>": bool}`` for every cloud flag on a page."""
     found: dict[str, bool] = {}
@@ -462,6 +613,12 @@ class SwannClient:
         self._cursor: dict[str, int] | None = None
         self._cursor_generation = -1
         self._levels: dict[tuple[int, str], _Level] = {}
+        self._status: dict[int, str] = {}
+        self._lights: dict[int, tuple[bool | None, bool | None]] = {}
+        self._last_alarm: dict[int, Any] = {}
+        self._recent_events: deque[dict[str, Any]] = deque(maxlen=RECENT_EVENTS_MAX)
+        self._motion_modes: dict[int, tuple[str, ...]] | None = None
+        self.motion_range_raw: dict[str, Any] | None = None
         self._clock = time.monotonic
         self._page_support: dict[str, bool] = {}
         self._taken_until = 0.0
@@ -739,10 +896,11 @@ class SwannClient:
         """Return all channels with name, online and motion-detection state."""
         data = await self._request(PATH_CHANNEL_INFO)
         try:
-            motion = await self.async_get_motion_detection()
+            motion_cfg = await self._async_get_motion_config()
         except SwannApiError as err:
             _LOGGER.debug("Motion detection config unavailable: %s", err)
-            motion = {}
+            motion_cfg = {}
+        motion = _motion_by_channel(motion_cfg)
         items = (data.get("channel_param") or {}).get("items") or []
         channels: list[Channel] = []
         for index, item in enumerate(items):
@@ -750,16 +908,22 @@ class SwannClient:
                 continue
             number = parse_channel(item.get("channel"), index + 1) or index + 1
             name = item.get("channel_name") or item.get("channel_alias")
-            status = str(item.get("connect_status", "online")).lower()
+            status = str(item.get("connect_status") or "Online")
+            cfg = motion.get(number, {})
+            switch = cfg.get("switch")
+            mode = cfg.get("multiple_switch")
             channels.append(
                 Channel(
                     number=number,
                     name=str(name or f"CH{number}"),
-                    online=status == "online",
-                    motion_detection_enabled=motion.get(number, False),
+                    online=status_available(status),
+                    motion_detection_enabled=bool(switch),
                     abilities=tuple(
                         str(a) for a in item.get("ability") or () if a is not None
                     ),
+                    connect_status=status,
+                    motion_mode=str(mode) if isinstance(mode, str) else None,
+                    has_motion_switch=isinstance(switch, bool),
                 )
             )
         return channels
@@ -806,14 +970,25 @@ class SwannClient:
         values: dict[int, dict[str, bool]] = {}
         for (channel, kind), level in self._levels.items():
             values.setdefault(channel, {})[kind] = level.value(now)
-        return {
-            channel: ChannelEvents(
+        channels = set(values) | set(self._status) | set(self._lights)
+        result: dict[int, ChannelEvents] = {}
+        for channel in sorted(channels):
+            kinds = values.get(channel, {})
+            floodlight, siren = self._lights.get(channel, (None, None))
+            result[channel] = ChannelEvents(
                 motion=kinds.get("motion", False),
                 person=kinds.get("person", False),
                 vehicle=kinds.get("vehicle", False),
+                connect_status=self._status.get(channel),
+                floodlight=floodlight,
+                siren=siren,
             )
-            for channel, kinds in sorted(values.items())
-        }
+        return result
+
+    @property
+    def recent_events(self) -> list[dict[str, Any]]:
+        """Recent non-idle raw Event/Check channel entries (oldest first)."""
+        return list(self._recent_events)
 
     def _level(self, channel: int, kind: str) -> _Level:
         return self._levels.setdefault((channel, kind), _Level())
@@ -825,19 +1000,67 @@ class SwannClient:
                 continue
             for alarm in entry.get("channel_alarm") or []:
                 if isinstance(alarm, dict):
+                    self._record_alarm(alarm, entry.get("time"))
                     self._apply_channel_alarm(alarm, now)
+
+    def _record_alarm(self, alarm: dict[str, Any], nvr_time: Any) -> None:
+        """Log changed channel entries and keep recent non-idle ones.
+
+        Person/vehicle payloads have never been seen from real firmware; this
+        is what users send back via debug logs or diagnostics.
+        """
+        channel = parse_channel(alarm.get("channel"))
+        if channel is None:
+            return
+        signature = _event_signature(alarm)
+        first = channel not in self._last_alarm
+        if not first and self._last_alarm[channel] == signature:
+            return
+        self._last_alarm[channel] = signature
+        raw = _drop_ranges(strip_secrets(alarm))
+        _LOGGER.debug(
+            "Event/Check CH%d: %s",
+            channel,
+            json.dumps(raw, separators=(",", ":"), sort_keys=True, default=str),
+        )
+        if first and not _alarm_active(alarm):
+            return  # initial idle snapshot
+        self._recent_events.append(
+            {
+                "received": datetime.now(UTC).isoformat(timespec="seconds"),
+                "nvr_time": nvr_time,
+                "entry": raw,
+            }
+        )
 
     def _apply_channel_alarm(self, alarm: dict[str, Any], now: float) -> None:
         channel = parse_channel(alarm.get("channel"))
         if channel is None:
             return
-        # Motion: record_flag.m is a level ("R" = active) and wins over the
-        # motion_alarm boolean when present.
+        # Motion: the motion_alarm boolean (sent on every entry by real
+        # firmware); record_flag.m ("R" = recording on motion) only as a
+        # fallback when the boolean is missing.
         flags = alarm.get("record_flag")
-        if isinstance(flags, dict) and "m" in flags:
-            self._level(channel, "motion").set(flags.get("m") == "R", now)
-        elif isinstance(alarm.get("motion_alarm"), bool):
+        if isinstance(alarm.get("motion_alarm"), bool):
             self._level(channel, "motion").set(alarm["motion_alarm"], now)
+        elif isinstance(flags, dict) and "m" in flags:
+            self._level(channel, "motion").set(flags.get("m") == "R", now)
+
+        status = alarm.get("camera_connect_status")
+        if isinstance(status, dict):
+            status = status.get("connect_status")
+        if isinstance(status, str) and status:
+            self._status[channel] = status
+
+        lights = alarm.get("Floodlight_AudioAlarm")
+        if isinstance(lights, dict):
+            old_flood, old_siren = self._lights.get(channel, (None, None))
+            flood = lights.get("floodlight_switch")
+            siren = lights.get("audioAlarm_switch")
+            self._lights[channel] = (
+                flood if isinstance(flood, bool) else old_flood,
+                siren if isinstance(siren, bool) else old_siren,
+            )
 
         int_alarms = alarm.get("int_alarm")
         if isinstance(int_alarms, dict):
@@ -860,14 +1083,47 @@ class SwannClient:
         return await self._request(PATH_MOTION_GET, {"page_type": "ChannelConfig"})
 
     async def async_get_motion_detection(self) -> dict[int, bool]:
-        """Return motion detection enable per channel."""
+        """Return motion detection enable per channel (boolean-switch firmware)."""
         data = await self._async_get_motion_config()
-        result: dict[int, bool] = {}
-        for key, cfg in (data.get("channel_info") or {}).items():
-            channel = parse_channel(key)
-            if channel is not None and isinstance(cfg, dict) and "switch" in cfg:
-                result[channel] = bool(cfg["switch"])
-        return result
+        return {
+            channel: bool(cfg["switch"])
+            for channel, cfg in _motion_by_channel(data).items()
+            if "switch" in cfg
+        }
+
+    async def async_get_motion_modes(self) -> dict[int, tuple[str, ...]]:
+        """Return allowed ``multiple_switch`` values per channel (from Range).
+
+        Read once and cached. Empty when Range lists none (the select is then
+        read-only); no "off" value is ever guessed.
+        """
+        if self._motion_modes is None:
+            try:
+                data = await self._request(
+                    PATH_MOTION_RANGE, {"page_type": "ChannelConfig"}
+                )
+            except SwannApiError as err:
+                _LOGGER.debug("Motion Range unavailable: %s", err)
+                data = {}
+            self.motion_range_raw = data
+            self._motion_modes = _parse_motion_modes(data)
+        return dict(self._motion_modes)
+
+    async def async_set_motion_mode(self, channel: int, mode: str) -> None:
+        """Set a channel's ``multiple_switch`` (read-modify-write)."""
+        data = await self._async_get_motion_config()
+        chn = (data.get("channel_info") or {}).get(f"CH{channel}")
+        if not isinstance(chn, dict) or "multiple_switch" not in chn:
+            raise SwannApiError(PATH_MOTION_GET, "channel_not_supported", 200)
+        chn["multiple_switch"] = mode
+        data["page_type"] = "ChannelConfig"
+        await self._request(PATH_MOTION_SET, strip_secrets(data))
+
+    async def async_get_cloud_link_state(self) -> str | None:
+        """Return SystemInfo/Base agent_cloud_link_state (e.g. "Connected")."""
+        data = await self._request(PATH_SYSTEM_INFO)
+        state = data.get("agent_cloud_link_state")
+        return str(state) if state not in (None, "") else None
 
     async def async_set_motion_detection(self, channel: int, enabled: bool) -> None:
         """Enable or disable motion detection on a channel (read-modify-write)."""

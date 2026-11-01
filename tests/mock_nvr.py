@@ -93,6 +93,8 @@ class MockNVR:
                 "alarm_motion_get_alarmconfig"
             ),
         }
+        # (page, page_type) -> Range data (default: a generic {"ranged": True}).
+        self.ranges: dict[tuple[str, str | None], dict[str, Any]] = {}
         self.app = web.Application()
         self.app.router.add_post("/API/Web/Login", self._login)
         self.app.router.add_post("/API/{path:.+}", self._api)
@@ -102,6 +104,25 @@ class MockNVR:
     def page(self, page: str, page_type: str | None = None) -> dict[str, Any]:
         """Return the stored data of a page (for assertions)."""
         return self.pages[(page, page_type)]
+
+    def use_real_mr4k(self) -> None:
+        """Answer like the user's NVW-MR4K (firmware V8.2.2-20250718).
+
+        Shapes from a real diagnostics download (tests/fixtures/real_mr4k_*);
+        only the Motion Range is modelled (see fixtures/README.md).
+        """
+        for key, name in (
+            (("Login/DeviceInfo", None), "login_deviceinfo"),
+            (("SystemInfo/Base", None), "systeminfo_base"),
+            (("Login/ChannelInfo", None), "login_channelinfo"),
+            (("AlarmConfig/Motion", "ChannelConfig"), "alarm_motion_get_channelconfig"),
+        ):
+            self.pages[key] = fixture_data(f"real_mr4k_{name}")
+        self.ranges[("AlarmConfig/Motion", "ChannelConfig")] = fixture_data(
+            "real_mr4k_alarm_motion_range_channelconfig"
+        )
+        self.remove_page("NetworkConfig/P2P")  # 404 on this firmware
+        self.events = [fixture_data("real_mr4k_event_check_initial")]
 
     def remove_page(self, page: str) -> None:
         """Make a page unsupported (Range/Get/Set answer 404)."""
@@ -207,7 +228,7 @@ class MockNVR:
         if action == "Get":
             return _ok(copy.deepcopy(self.pages[key]))
         if action == "Range":
-            return _ok({"ranged": True})
+            return _ok(copy.deepcopy(self.ranges.get(key, {"ranged": True})))
         if action == "Set":
             self.sets.append((path, copy.deepcopy(data)))
             stored = self.pages[key]

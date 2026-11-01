@@ -1,0 +1,98 @@
+{
+  "result": "success",
+  "data": {
+    "device_main_menu": [
+      "localSetting",
+      "remoteSetting",
+      "playback",
+      "preview"
+    ],
+    "intelligent_chn_arr": [
+      "CH1",
+      "CH2",
+      "CH3",
+      "CH4",
+      "CH5",
+      "CH6",
+      "CH7",
+      "CH8"
+    ],
+    "channel_num": 8,
+    "analog_channel_num": 0,
+    "stream_profile": {
+      "type": "string",
+      "items": [
+        "Mainstream",
+        "Substream"
+      ]
+    },
+    "support_ftp_upgrade": true,
+    "support_ftp_ipc_upgrade": true,
+    "support_cloud_upgrade": false,
+    "push_type": "Baidu",
+    "default_stream": "SubStream",
+    "pushinfo_type": {
+      "type": "string",
+      "items": [
+        "Motion",
+        "Io",
+        "Videoloss"
+      ]
+    },
+    "local_alarmin_num": 0,
+    "local_alarmout_num": 0,
+    "suggested_modify_pwd": "**REDACTED**",
+    "support_ie_down_snap": false,
+    "support_face_config": false,
+    "support_face_attribute": false,
+    "support_human_vehicle_search": false,
+    "support_license_plate": false,
+    "preview_num": 0,
+    "mac_addr": "**REDACTED**",
+    "support_smart_record": false,
+    "live_button_control": {
+      "stretchBtn_visible": false,
+      "originalSize_visible": false
+    },
+    "playback_button_control": {
+      "stretchBtn_visible": false,
+      "originalSize_visible": false
+    },
+    "support_substream_playback": true,
+    "support_pir_record": true,
+    "support_flood_light": true,
+    "support_record_tag": false,
+    "support_backward_play": true,
+    "support_hls_server": true,
+    "support_speaker": false,
+    "support_sound_record": false,
+    "support_manual_record": true,
+    "client_ai_playback_streamtype": 1,
+    "support_video_cover_record": false,
+    "support_more_chn_playback": false,
+    "support_aac": true,
+    "videoloss_status": true,
+    "nocamera_display": true,
+    "support_playback_new_rec_detail": true,
+    "support_playback_new_rec_file_download": true,
+    "support_io_record": false,
+    "upgrade_file_max_size": 100,
+    "upgrade_head_trans_size": 3,
+    "media_port": 9000,
+    "media_external_port": 9000,
+    "local_ip": "**REDACTED**",
+    "enable_encryption": false,
+    "stream_linkage": "none",
+    "support_record_type_ex": true,
+    "support_preview_ControlBtnOper": true,
+    "sound": true,
+    "support_audio_volume": true,
+    "no_pixelCount": true,
+    "autoOpenPreview_cookie": true,
+    "dev_play_backcap": 2,
+    "dev_type": 5932088454307709696,
+    "device_type": "NVW-MR4K",
+    "p2p_id": "**REDACTED**",
+    "autoOpenPreview": true
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "result": "success",
+  "data": {
+    "device_name": "Wetherill St",
+    "device_type": "NVW-MR4K",
+    "hardware_version": "2M017A",
+    "software_version": "V8.2.2-20250718",
+    "wifi_version": "**REDACTED**-0613",
+    "ie_client_version": "V1.2.1.83",
+    "ie_client_version_hide": true,
+    "video_format": "PAL",
+    "hdd_volume": "58G",
+    "ip_address": "**REDACTED**",
+    "http_port": "85",
+    "client": "9000",
+    "mac_address": "**REDACTED**",
+    "wireless_mac": "",
+    "p2p_id": "**REDACTED**",
+    "agent_cloud_link_state": "Connected",
+    "agent_version": "4.2.23",
+    "iot_id": "",
+    "language": "English"
+  }
+}

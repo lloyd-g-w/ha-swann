@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from dataclasses import replace
 from unittest.mock import patch
 
 from homeassistant.const import (
@@ -89,8 +90,18 @@ class FakeSwannClient(SwannClient):
         return dict(self.events)
 
     async def async_set_motion_detection(self, channel: int, enabled: bool) -> None:
-        ch = self.channels[channel]
-        self.channels[channel] = Channel(ch.number, ch.name, ch.online, enabled)
+        self.channels[channel] = replace(
+            self.channels[channel], motion_detection_enabled=enabled
+        )
+
+    async def async_get_motion_modes(self) -> dict[int, tuple[str, ...]]:
+        return {}
+
+    async def async_get_cloud_link_state(self) -> str | None:
+        return "Connected"
+
+    async def async_heartbeat(self) -> None:
+        return
 
     async def async_get_cloud_settings(self) -> CloudSettings:
         return self.cloud

@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import Channel
+from .api import Channel, ChannelEvents, status_available
 from .const import DOMAIN
 from .coordinator import SwannCoordinator
 
@@ -60,7 +60,26 @@ class SwannChannelEntity(CoordinatorEntity[SwannCoordinator]):
         return self.coordinator.data.channels.get(self.channel_number)
 
     @property
-    def available(self) -> bool:
-        """Available when the NVR is reachable and the channel is online."""
+    def events(self) -> ChannelEvents:
+        """Return the latest event state of the channel."""
+        return self.coordinator.data.events.get(self.channel_number, ChannelEvents())
+
+    @property
+    def connect_status(self) -> str | None:
+        """Live connect_status (Event/Check), else the polled one."""
+        status = self.events.connect_status
+        if status:
+            return status
         ch = self.channel
-        return super().available and ch is not None and ch.online
+        return ch.connect_status if ch is not None else None
+
+    @property
+    def available(self) -> bool:
+        """Available when the NVR is reachable and the camera online or asleep."""
+        status = self.connect_status
+        return (
+            super().available
+            and self.channel is not None
+            and status is not None
+            and status_available(status)
+        )

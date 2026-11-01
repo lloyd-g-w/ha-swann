@@ -1,0 +1,115 @@
+{
+  "result": "success",
+  "data": {
+    "channel_info": {
+      "CH1": {
+        "multiple_switch": "PIR_and_Person_or_Vehicle",
+        "sensitivity": "7",
+        "distance": 80,
+        "AiSensitivity": "4",
+        "SleepDuration": 5,
+        "region_setting": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "mbrow": 36,
+        "mbcol": 44
+      },
+      "CH2": {
+        "multiple_switch": "PIR_and_Person_or_Vehicle",
+        "sensitivity": "4",
+        "distance": 80,
+        "AiSensitivity": "4",
+        "SleepDuration": 5,
+        "region_setting": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "mbrow": 36,
+        "mbcol": 44
+      },
+      "CH3": {
+        "multiple_switch": "PIR_and_Person_or_Vehicle",
+        "sensitivity": "4",
+        "distance": 80,
+        "AiSensitivity": "4",
+        "SleepDuration": 5,
+        "region_setting": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "mbrow": 36,
+        "mbcol": 44
+      },
+      "CH4": {
+        "multiple_switch": "PIR_and_Person_or_Vehicle",
+        "sensitivity": "4",
+        "distance": 80,
+        "AiSensitivity": "4",
+        "SleepDuration": 5,
+        "region_setting": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "mbrow": 36,
+        "mbcol": 44
+      },
+      "CH5": {
+        "multiple_switch": "PIR_and_Person_or_Vehicle",
+        "sensitivity": "4",
+        "region_setting": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "mbrow": 36,
+        "mbcol": 44
+      },
+      "CH6": {
+        "multiple_switch": "PIR_and_Person_or_Vehicle",
+        "sensitivity": "4",
+        "region_setting": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "mbrow": 36,
+        "mbcol": 44
+      },
+      "CH7": {
+        "multiple_switch": "PIR_and_Person_or_Vehicle",
+        "sensitivity": "4",
+        "region_setting": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "mbrow": 36,
+        "mbcol": 44
+      },
+      "CH8": {
+        "multiple_switch": "PIR_and_Person_or_Vehicle",
+        "sensitivity": "4",
+        "region_setting": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "mbrow": 36,
+        "mbcol": 44
+      }
+    }
+  }
+}

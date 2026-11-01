@@ -1,0 +1,303 @@
+{
+  "result": "success",
+  "data": {
+    "alarm_list": [
+      {
+        "time": "11/01/2026 16:43:21",
+        "system_alarm": [
+          {
+            "device_name": "Wetherill St",
+            "hdd": {
+              "hdd_alarm_type": "Ok",
+              "hdd_alarm_info": ""
+            }
+          }
+        ],
+        "channel_alarm": [
+          {
+            "channel": "CH1",
+            "motion_alarm": false,
+            "io_alarm": false,
+            "videoloss": false,
+            "hide_instant_playback": true,
+            "abilityEx": {
+              "tag": false
+            },
+            "camera_connect_status": {
+              "connect_status": "Sleep",
+              "ability": [
+                "Mainstream",
+                "Substream",
+                "Floodlight",
+                "AudioAlarm",
+                "TalkHalf",
+                "TalkFull",
+                "Color",
+                "NotAutoReconnect"
+              ],
+              "alarm_in_num": 0,
+              "alarm_out_num": 0
+            },
+            "channel_name": "Syd Driveway",
+            "record_flag": {},
+            "Floodlight_AudioAlarm": {
+              "floodlight_switch": false,
+              "floodlight_value": 50,
+              "floodlight_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 100
+              },
+              "audioAlarm_switch": false,
+              "audioAlarm_value": 5,
+              "audioAlarm_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 10
+              }
+            }
+          },
+          {
+            "channel": "CH2",
+            "motion_alarm": false,
+            "io_alarm": false,
+            "videoloss": false,
+            "hide_instant_playback": true,
+            "abilityEx": {
+              "tag": false
+            },
+            "camera_connect_status": {
+              "connect_status": "Sleep",
+              "ability": [
+                "Mainstream",
+                "Substream",
+                "Floodlight",
+                "AudioAlarm",
+                "TalkHalf",
+                "TalkFull",
+                "Color",
+                "NotAutoReconnect"
+              ],
+              "alarm_in_num": 0,
+              "alarm_out_num": 0
+            },
+            "channel_name": "Syd Side Path",
+            "record_flag": {},
+            "Floodlight_AudioAlarm": {
+              "floodlight_switch": false,
+              "floodlight_value": 50,
+              "floodlight_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 100
+              },
+              "audioAlarm_switch": false,
+              "audioAlarm_value": 5,
+              "audioAlarm_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 10
+              }
+            }
+          },
+          {
+            "channel": "CH3",
+            "motion_alarm": false,
+            "io_alarm": false,
+            "videoloss": false,
+            "hide_instant_playback": true,
+            "abilityEx": {
+              "tag": false
+            },
+            "camera_connect_status": {
+              "connect_status": "Sleep",
+              "ability": [
+                "Mainstream",
+                "Substream",
+                "Floodlight",
+                "AudioAlarm",
+                "TalkHalf",
+                "TalkFull",
+                "Color",
+                "NotAutoReconnect"
+              ],
+              "alarm_in_num": 0,
+              "alarm_out_num": 0
+            },
+            "channel_name": "Syd Garden",
+            "record_flag": {},
+            "Floodlight_AudioAlarm": {
+              "floodlight_switch": false,
+              "floodlight_value": 50,
+              "floodlight_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 100
+              },
+              "audioAlarm_switch": false,
+              "audioAlarm_value": 5,
+              "audioAlarm_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 10
+              }
+            }
+          },
+          {
+            "channel": "CH4",
+            "motion_alarm": false,
+            "io_alarm": false,
+            "videoloss": false,
+            "hide_instant_playback": true,
+            "abilityEx": {
+              "tag": false
+            },
+            "camera_connect_status": {
+              "connect_status": "Sleep",
+              "ability": [
+                "Mainstream",
+                "Substream",
+                "AudioAlarm",
+                "TalkHalf",
+                "TalkFull",
+                "Color",
+                "NotAutoReconnect"
+              ],
+              "alarm_in_num": 0,
+              "alarm_out_num": 0
+            },
+            "channel_name": "Sydney Door",
+            "record_flag": {},
+            "Floodlight_AudioAlarm": {
+              "floodlight_switch": false,
+              "floodlight_value": 50,
+              "floodlight_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 100
+              },
+              "audioAlarm_switch": false,
+              "audioAlarm_value": 5,
+              "audioAlarm_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 10
+              }
+            }
+          },
+          {
+            "channel": "CH5",
+            "motion_alarm": false,
+            "io_alarm": false,
+            "videoloss": true,
+            "camera_connect_status": {
+              "connect_status": "NotPaired"
+            },
+            "channel_name": "Channel 5",
+            "record_flag": {},
+            "Floodlight_AudioAlarm": {
+              "floodlight_switch": false,
+              "floodlight_value": 50,
+              "floodlight_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 100
+              },
+              "audioAlarm_switch": false,
+              "audioAlarm_value": 5,
+              "audioAlarm_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 10
+              }
+            }
+          },
+          {
+            "channel": "CH6",
+            "motion_alarm": false,
+            "io_alarm": false,
+            "videoloss": true,
+            "camera_connect_status": {
+              "connect_status": "NotPaired"
+            },
+            "channel_name": "Channel 6",
+            "record_flag": {},
+            "Floodlight_AudioAlarm": {
+              "floodlight_switch": false,
+              "floodlight_value": 50,
+              "floodlight_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 100
+              },
+              "audioAlarm_switch": false,
+              "audioAlarm_value": 5,
+              "audioAlarm_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 10
+              }
+            }
+          },
+          {
+            "channel": "CH7",
+            "motion_alarm": false,
+            "io_alarm": false,
+            "videoloss": true,
+            "camera_connect_status": {
+              "connect_status": "NotPaired"
+            },
+            "channel_name": "Channel 7",
+            "record_flag": {},
+            "Floodlight_AudioAlarm": {
+              "floodlight_switch": false,
+              "floodlight_value": 50,
+              "floodlight_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 100
+              },
+              "audioAlarm_switch": false,
+              "audioAlarm_value": 5,
+              "audioAlarm_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 10
+              }
+            }
+          },
+          {
+            "channel": "CH8",
+            "motion_alarm": false,
+            "io_alarm": false,
+            "videoloss": true,
+            "camera_connect_status": {
+              "connect_status": "NotPaired"
+            },
+            "channel_name": "Channel 8",
+            "record_flag": {},
+            "Floodlight_AudioAlarm": {
+              "floodlight_switch": false,
+              "floodlight_value": 50,
+              "floodlight_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 100
+              },
+              "audioAlarm_switch": false,
+              "audioAlarm_value": 5,
+              "audioAlarm_value_range": {
+                "type": "int32",
+                "min": 1,
+                "max": 10
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "reader_id": 27,
+    "sequence": 402,
+    "lap_number": 1
+  }
+}

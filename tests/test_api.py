@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 import copy
+import logging
 from typing import Any
 
 import aiohttp
@@ -12,6 +13,7 @@ import pytest
 
 from custom_components.swann.api import (
     EVENT_HOLD_SECONDS,
+    RECENT_EVENTS_MAX,
     SERVER_PAGES,
     ChannelEvents,
     CloudSettings,
@@ -289,7 +291,7 @@ async def test_events_flow(client: SwannClient, mock: MockNVR, clock: FakeClock)
         fixture_data("event_check_alarm_end"),
     ]
     events = await client.async_get_channel_events()
-    assert events[1] == ChannelEvents()
+    assert _mpv(events[1]) == _mpv(ChannelEvents())
     assert mock.event_bodies[0] == {}
 
     events = await client.async_get_channel_events()
@@ -297,15 +299,15 @@ async def test_events_flow(client: SwannClient, mock: MockNVR, clock: FakeClock)
     assert mock.event_bodies[1] == {"reader_id": 3, "sequence": 117, "lap_number": 0}
 
     events = await client.async_get_channel_events()
-    assert events[1] == ChannelEvents(motion=True)
+    assert _mpv(events[1]) == _mpv(ChannelEvents(motion=True))
 
     events = await client.async_get_channel_events()
-    assert events[1] == ChannelEvents(motion=True, person=True)
-    assert events[2] == ChannelEvents(vehicle=True)
+    assert _mpv(events[1]) == _mpv(ChannelEvents(motion=True, person=True))
+    assert _mpv(events[2]) == _mpv(ChannelEvents(vehicle=True))
 
     events = await client.async_get_channel_events()
-    assert events[1] == ChannelEvents()
-    assert events[2] == ChannelEvents()
+    assert _mpv(events[1]) == _mpv(ChannelEvents())
+    assert _mpv(events[2]) == _mpv(ChannelEvents())
 
 
 async def test_events_hold_then_clear(
@@ -554,3 +556,58 @@ async def test_cloud_extra_alarm_page(client: SwannClient, mock: MockNVR) -> Non
     body = next(b for p, b in mock.sets if p == "AI/Setup/PVD/Set")
     assert body["page_type"] == "AlarmConfig"
     assert body["channel_info"]["CH2"]["video_to_cloud"] is False
+
+
+def _mpv(ev: ChannelEvents) -> tuple[bool, bool, bool]:
+    """Event flags only (connect_status / lights are compared separately)."""
+    return (ev.motion, ev.person, ev.vehicle)
+
+
+# --- raw event logging (real payloads are still unverified) ---------------
+
+
+def _real_event_check(seq: int, **changes: dict) -> dict:
+    data = copy.deepcopy(fixture_data("real_mr4k_event_check_initial"))
+    data["sequence"] = seq
+    for alarm in data["alarm_list"][0]["channel_alarm"]:
+        alarm.update(changes.get(alarm["channel"], {}))
+    return data
+
+
+async def test_event_changes_logged_and_kept(
+    client: SwannClient, mock: MockNVR, caplog: pytest.LogCaptureFixture
+) -> None:
+    person = {
+        "motion_alarm": True,
+        "int_alarm": {"alarm_val": True, "int_subtype": "person"},
+        "password": "hunter2",
+    }
+    mock.events = [
+        _real_event_check(1),  # idle snapshot: logged, not kept
+        _real_event_check(2),  # identical: neither
+        _real_event_check(3, CH1=person),  # change: both
+        _real_event_check(4, CH1=person),  # identical again: neither
+        _real_event_check(5),  # back to idle: both (the end of the event)
+    ]
+    with caplog.at_level(logging.DEBUG, logger="custom_components.swann.api"):
+        for _ in range(5):
+            await client.async_get_channel_events()
+    lines = [r.getMessage() for r in caplog.records if "Event/Check CH1" in r.message]
+    assert len(lines) == 3
+    assert '"int_subtype":"person"' in lines[1]  # compact JSON
+    assert "hunter2" not in caplog.text
+    assert "floodlight_value_range" not in caplog.text  # static noise dropped
+    recent = client.recent_events
+    assert [e["entry"]["motion_alarm"] for e in recent] == [True, False]
+    assert all(e["received"] and e["nvr_time"] for e in recent)
+    assert "password" not in recent[0]["entry"]
+
+
+async def test_recent_events_bounded(client: SwannClient, mock: MockNVR) -> None:
+    mock.events = [
+        _real_event_check(i, CH1={"motion_alarm": bool(i % 2)})
+        for i in range(1, RECENT_EVENTS_MAX + 10)
+    ]
+    for _ in range(len(mock.events)):
+        await client.async_get_channel_events()
+    assert len(client.recent_events) == RECENT_EVENTS_MAX

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from unittest.mock import patch
+
 from homeassistant.components.camera import async_get_stream_source
 from homeassistant.components.camera.const import DATA_COMPONENT as CAMERA_DATA_KEY
 from homeassistant.components.stream import (
@@ -108,3 +111,19 @@ async def test_camera_rtsp_transport(
     camera = hass.data[CAMERA_DATA_KEY].get_entity("camera.front_door")
     # HA's stream worker passes this to ffmpeg as rtsp_transport.
     assert camera.stream_options == {STREAM_CONF_RTSP_TRANSPORT: transport}
+
+
+async def test_camera_snapshots_cached_and_never_streaming(
+    hass: HomeAssistant, fake_client: FakeSwannClient, config_entry: MockConfigEntry
+):
+    """Battery cameras: no preloading, and snapshots don't wake them often."""
+    fake_client.channels[1] = replace(fake_client.channels[1], connect_status="Sleep")
+    await _setup(hass, config_entry)
+    camera = hass.data[CAMERA_DATA_KEY].get_entity("camera.front_door")
+    assert camera.is_streaming is False
+    with patch(
+        "custom_components.swann.camera.async_get_image", return_value=b"jpeg"
+    ) as grab:
+        assert await camera.async_camera_image() == b"jpeg"
+        assert await camera.async_camera_image() == b"jpeg"
+    assert grab.call_count == 1  # asleep: cached for 30 minutes

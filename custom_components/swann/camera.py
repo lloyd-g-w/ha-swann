@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image
 from homeassistant.core import HomeAssistant
@@ -18,6 +20,12 @@ from .entity import SwannChannelEntity
 
 PARALLEL_UPDATES = 0
 
+# Snapshots go through ffmpeg on the RTSP stream, which wakes battery cameras
+# (and drains them). Reuse the last frame: while a camera sleeps, take a new
+# one at most every 30 minutes; while it is awake, at most every 10 seconds.
+SNAPSHOT_INTERVAL_AWAKE = 10.0
+SNAPSHOT_INTERVAL_ASLEEP = 1800.0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -29,8 +37,8 @@ async def async_setup_entry(
     stream = entry.options.get(CONF_STREAM_TYPE, DEFAULT_STREAM_TYPE)
     transport = entry.options.get(CONF_RTSP_TRANSPORT, DEFAULT_RTSP_TRANSPORT)
     async_add_entities(
-        SwannCamera(coordinator, ch, stream, transport)
-        for ch in coordinator.data.channels
+        SwannCamera(coordinator, ch.number, stream, transport)
+        for ch in coordinator.paired_channels
     )
 
 
@@ -51,6 +59,8 @@ class SwannCamera(SwannChannelEntity, Camera):
         SwannChannelEntity.__init__(self, coordinator, channel, "camera")
         Camera.__init__(self)
         self._stream_type = stream
+        self._snapshot: bytes | None = None
+        self._snapshot_time = 0.0
         # Read by HA's stream worker (PyAV/ffmpeg rtsp_transport option).
         self.stream_options[CONF_RTSP_TRANSPORT] = transport
 
@@ -58,11 +68,27 @@ class SwannCamera(SwannChannelEntity, Camera):
         """Return the RTSP URL."""
         return self.coordinator.client.rtsp_url(self.channel_number, self._stream_type)
 
+    @property
+    def is_streaming(self) -> bool:
+        """Never report streaming: streams are opened on demand only."""
+        return False
+
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Grab a still frame from the stream via ffmpeg."""
+        """Return a still frame (cached; see SNAPSHOT_INTERVAL_*)."""
+        status = (self.connect_status or "").lower()
+        interval = (
+            SNAPSHOT_INTERVAL_AWAKE if status == "online" else SNAPSHOT_INTERVAL_ASLEEP
+        )
+        now = time.monotonic()
+        if self._snapshot is not None and now - self._snapshot_time < interval:
+            return self._snapshot
         source = await self.stream_source()
         if source is None:
-            return None
-        return await async_get_image(self.hass, source, width=width, height=height)
+            return self._snapshot
+        image = await async_get_image(self.hass, source, width=width, height=height)
+        if image:
+            self._snapshot = image
+            self._snapshot_time = now
+        return image or self._snapshot

@@ -1,0 +1,292 @@
+{
+ "result": "success",
+ "data": {
+  "channel_info": {
+   "type": "object",
+   "items": {
+    "CH1": {
+     "type": "object",
+     "items": {
+      "multiple_switch": {
+       "type": "enum",
+       "items": [
+        "PIR_and_Motion",
+        "PIR_and_Person",
+        "PIR_and_Person_or_Vehicle"
+       ]
+      },
+      "multiple_switch_content": {
+       "type": "object",
+       "items": {
+        "PIR_and_Motion": {
+         "type": "string",
+         "items": [
+          "sensitivity"
+         ]
+        },
+        "PIR_and_Person": {
+         "type": "string",
+         "items": [
+          "AiSensitivity"
+         ]
+        },
+        "PIR_and_Person_or_Vehicle": {
+         "type": "string",
+         "items": [
+          "sensitivity",
+          "AiSensitivity"
+         ]
+        }
+       }
+      },
+      "sensitivity": {
+       "type": "enum",
+       "items": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8"
+       ]
+      },
+      "AiSensitivity": {
+       "type": "enum",
+       "items": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+       ]
+      },
+      "distance": {
+       "type": "int32",
+       "min": 0,
+       "max": 100
+      },
+      "SleepDuration": {
+       "type": "int32",
+       "min": 5,
+       "max": 60
+      }
+     }
+    },
+    "CH2": {
+     "type": "object",
+     "items": {
+      "multiple_switch": {
+       "type": "enum",
+       "items": [
+        "PIR_and_Motion",
+        "PIR_and_Person",
+        "PIR_and_Person_or_Vehicle"
+       ]
+      },
+      "multiple_switch_content": {
+       "type": "object",
+       "items": {
+        "PIR_and_Motion": {
+         "type": "string",
+         "items": [
+          "sensitivity"
+         ]
+        },
+        "PIR_and_Person": {
+         "type": "string",
+         "items": [
+          "AiSensitivity"
+         ]
+        },
+        "PIR_and_Person_or_Vehicle": {
+         "type": "string",
+         "items": [
+          "sensitivity",
+          "AiSensitivity"
+         ]
+        }
+       }
+      },
+      "sensitivity": {
+       "type": "enum",
+       "items": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8"
+       ]
+      },
+      "AiSensitivity": {
+       "type": "enum",
+       "items": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+       ]
+      },
+      "distance": {
+       "type": "int32",
+       "min": 0,
+       "max": 100
+      },
+      "SleepDuration": {
+       "type": "int32",
+       "min": 5,
+       "max": 60
+      }
+     }
+    },
+    "CH3": {
+     "type": "object",
+     "items": {
+      "multiple_switch": {
+       "type": "enum",
+       "items": [
+        "PIR_and_Motion",
+        "PIR_and_Person",
+        "PIR_and_Person_or_Vehicle"
+       ]
+      },
+      "multiple_switch_content": {
+       "type": "object",
+       "items": {
+        "PIR_and_Motion": {
+         "type": "string",
+         "items": [
+          "sensitivity"
+         ]
+        },
+        "PIR_and_Person": {
+         "type": "string",
+         "items": [
+          "AiSensitivity"
+         ]
+        },
+        "PIR_and_Person_or_Vehicle": {
+         "type": "string",
+         "items": [
+          "sensitivity",
+          "AiSensitivity"
+         ]
+        }
+       }
+      },
+      "sensitivity": {
+       "type": "enum",
+       "items": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8"
+       ]
+      },
+      "AiSensitivity": {
+       "type": "enum",
+       "items": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+       ]
+      },
+      "distance": {
+       "type": "int32",
+       "min": 0,
+       "max": 100
+      },
+      "SleepDuration": {
+       "type": "int32",
+       "min": 5,
+       "max": 60
+      }
+     }
+    },
+    "CH4": {
+     "type": "object",
+     "items": {
+      "multiple_switch": {
+       "type": "enum",
+       "items": [
+        "PIR_and_Motion",
+        "PIR_and_Person",
+        "PIR_and_Person_or_Vehicle"
+       ]
+      },
+      "multiple_switch_content": {
+       "type": "object",
+       "items": {
+        "PIR_and_Motion": {
+         "type": "string",
+         "items": [
+          "sensitivity"
+         ]
+        },
+        "PIR_and_Person": {
+         "type": "string",
+         "items": [
+          "AiSensitivity"
+         ]
+        },
+        "PIR_and_Person_or_Vehicle": {
+         "type": "string",
+         "items": [
+          "sensitivity",
+          "AiSensitivity"
+         ]
+        }
+       }
+      },
+      "sensitivity": {
+       "type": "enum",
+       "items": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8"
+       ]
+      },
+      "AiSensitivity": {
+       "type": "enum",
+       "items": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+       ]
+      },
+      "distance": {
+       "type": "int32",
+       "min": 0,
+       "max": 100
+      },
+      "SleepDuration": {
+       "type": "int32",
+       "min": 5,
+       "max": 60
+      }
+     }
+    }
+   }
+  },
+  "support_copy": true,
+  "channel_max": 8
+ }
+}

@@ -33,7 +33,9 @@ async def async_setup_entry(
     runtime = entry.runtime_data
     coordinator = runtime.coordinator
     entities: list[SwitchEntity] = [
-        SwannMotionDetectionSwitch(coordinator, ch) for ch in coordinator.data.channels
+        SwannMotionDetectionSwitch(coordinator, ch.number)
+        for ch in coordinator.paired_channels
+        if ch.has_motion_switch
     ]
     entities.append(SwannCloudSwitch(coordinator, runtime.cloud_store))
     async_add_entities(entities)

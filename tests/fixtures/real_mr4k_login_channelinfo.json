@@ -1,0 +1,167 @@
+{
+  "result": "success",
+  "data": {
+    "channel_param": {
+      "type": "array",
+      "min_size": 0,
+      "max_size": 8,
+      "items": [
+        {
+          "channel": "CH1",
+          "connect_status": "Sleep",
+          "channel_name": "Syd Driveway",
+          "channel_alias": "",
+          "ability": [
+            "Mainstream",
+            "Substream",
+            "Floodlight",
+            "AudioAlarm",
+            "TalkHalf",
+            "TalkFull",
+            "Color",
+            "Pir"
+          ],
+          "intelligent_ability": [],
+          "abilityEx": {
+            "tag": false
+          },
+          "alarm_in_num": 0,
+          "alarm_out_num": 0,
+          "hide_instant_playback": true,
+          "videoloss": false
+        },
+        {
+          "channel": "CH2",
+          "connect_status": "Sleep",
+          "channel_name": "Syd Side Path",
+          "channel_alias": "",
+          "ability": [
+            "Mainstream",
+            "Substream",
+            "Floodlight",
+            "AudioAlarm",
+            "TalkHalf",
+            "TalkFull",
+            "Color",
+            "Pir"
+          ],
+          "intelligent_ability": [],
+          "abilityEx": {
+            "tag": false
+          },
+          "alarm_in_num": 0,
+          "alarm_out_num": 0,
+          "hide_instant_playback": true,
+          "videoloss": false
+        },
+        {
+          "channel": "CH3",
+          "connect_status": "Sleep",
+          "channel_name": "Syd Garden",
+          "channel_alias": "",
+          "ability": [
+            "Mainstream",
+            "Substream",
+            "Floodlight",
+            "AudioAlarm",
+            "TalkHalf",
+            "TalkFull",
+            "Color",
+            "Pir"
+          ],
+          "intelligent_ability": [],
+          "abilityEx": {
+            "tag": false
+          },
+          "alarm_in_num": 0,
+          "alarm_out_num": 0,
+          "hide_instant_playback": true,
+          "videoloss": false
+        },
+        {
+          "channel": "CH4",
+          "connect_status": "Sleep",
+          "channel_name": "Sydney Door",
+          "channel_alias": "",
+          "ability": [
+            "Mainstream",
+            "Substream",
+            "AudioAlarm",
+            "TalkHalf",
+            "TalkFull",
+            "Color",
+            "Pir"
+          ],
+          "intelligent_ability": [],
+          "abilityEx": {
+            "tag": false
+          },
+          "alarm_in_num": 0,
+          "alarm_out_num": 0,
+          "hide_instant_playback": true,
+          "videoloss": false
+        },
+        {
+          "channel": "CH5",
+          "connect_status": "NotPaired",
+          "channel_name": "Channel 5",
+          "channel_alias": "",
+          "ability": [],
+          "intelligent_ability": [],
+          "abilityEx": {
+            "tag": true
+          },
+          "alarm_in_num": 0,
+          "alarm_out_num": 0,
+          "hide_instant_playback": false,
+          "videoloss": true
+        },
+        {
+          "channel": "CH6",
+          "connect_status": "NotPaired",
+          "channel_name": "Channel 6",
+          "channel_alias": "",
+          "ability": [],
+          "intelligent_ability": [],
+          "abilityEx": {
+            "tag": true
+          },
+          "alarm_in_num": 0,
+          "alarm_out_num": 0,
+          "hide_instant_playback": false,
+          "videoloss": true
+        },
+        {
+          "channel": "CH7",
+          "connect_status": "NotPaired",
+          "channel_name": "Channel 7",
+          "channel_alias": "",
+          "ability": [],
+          "intelligent_ability": [],
+          "abilityEx": {
+            "tag": true
+          },
+          "alarm_in_num": 0,
+          "alarm_out_num": 0,
+          "hide_instant_playback": false,
+          "videoloss": true
+        },
+        {
+          "channel": "CH8",
+          "connect_status": "NotPaired",
+          "channel_name": "Channel 8",
+          "channel_alias": "",
+          "ability": [],
+          "intelligent_ability": [],
+          "abilityEx": {
+            "tag": true
+          },
+          "alarm_in_num": 0,
+          "alarm_out_num": 0,
+          "hide_instant_playback": false,
+          "videoloss": true
+        }
+      ]
+    }
+  }
+}

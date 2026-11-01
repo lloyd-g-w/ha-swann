@@ -17,7 +17,13 @@ from .const import (
 from .coordinator import SwannConfigEntry, SwannCoordinator, SwannRuntimeData
 from .entity import channel_identifier
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.CAMERA, Platform.SWITCH]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.CAMERA,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+]
 
 
 def cloud_store(hass: HomeAssistant, entry_id: str) -> Store[dict]:
@@ -50,15 +56,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: SwannConfigEntry) -> boo
         sw_version=dev.firmware_version,
         hw_version=dev.hardware_version,
     )
-    # Channel devices, linked to the NVR (entities only carry identifiers).
-    for number, ch in coordinator.data.channels.items():
-        registry.async_get_or_create(
+    # Channel devices for paired cameras, linked to the NVR (entities only
+    # carry identifiers). Empty slots ("NotPaired") get no device.
+    wanted = {nvr_device.id}
+    for ch in coordinator.paired_channels:
+        device = registry.async_get_or_create(
             config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, channel_identifier(dev.serial, number))},
+            identifiers={(DOMAIN, channel_identifier(dev.serial, ch.number))},
             manufacturer="Swann",
-            name=ch.name or f"Channel {number}",
+            name=ch.name or f"Channel {ch.number}",
             via_device_id=nvr_device.id,
         )
+        wanted.add(device.id)
+    # Remove devices of channels that are no longer paired.
+    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
+        if device.id not in wanted:
+            registry.async_update_device(
+                device.id, remove_config_entry_id=entry.entry_id
+            )
     entry.runtime_data = SwannRuntimeData(
         client=client,
         coordinator=coordinator,

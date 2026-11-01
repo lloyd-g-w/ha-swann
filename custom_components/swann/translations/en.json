@@ -75,6 +75,15 @@
       },
       "vehicle": {
         "name": "Vehicle"
+      },
+      "awake": {
+        "name": "Awake"
+      },
+      "floodlight": {
+        "name": "Floodlight"
+      },
+      "siren": {
+        "name": "Siren"
       }
     },
     "switch": {
@@ -84,6 +93,16 @@
       "cloud": {
         "name": "Swann cloud"
       }
+    },
+    "select": {
+      "motion_mode": {
+        "name": "Motion detection mode"
+      }
+    },
+    "sensor": {
+      "cloud_connection": {
+        "name": "Cloud connection"
+      }
     }
   },
   "exceptions": {
@@ -92,6 +111,9 @@
     },
     "no_saved_cloud_settings": {
       "message": "No saved cloud settings to restore. Re-enable cloud features in the NVR or Swann app."
+    },
+    "motion_mode_read_only": {
+      "message": "The NVR did not list \"{option}\" as an allowed motion detection mode."
     }
   }
 }

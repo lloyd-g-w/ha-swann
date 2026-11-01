@@ -33,3 +33,13 @@ Conventions:
 | ai_setup_pvd_get_channelconfig.json | AI/Setup/PVD | `switch,rule_info,type_vehicle` H, `type_human` L | L |
 | alarm_combination_get.json | AlarmConfig/Combination | H (`group[].PolicyConfigs[0].UploadToCloud` bitmask bytes) | L |
 | preview_floodlight2audioalarm_*.json | PreviewChannel/Floodlight2AudioAlarm | H (live.js) | values L |
+
+## Real device: NVW-MR4K, firmware V8.2.2-20250718 (tests/fixtures/real_mr4k_*)
+
+Captured (redacted) from the user's diagnostics download, numeric region
+arrays shortened to 4 entries: `login_deviceinfo`, `systeminfo_base`,
+`login_channelinfo`, `alarm_motion_get_channelconfig`, `event_check_initial`
+(idle). **Modelled, a guess:** `alarm_motion_range_channelconfig`: structure
+from the web UI code (`channel_info.items.CHn.items.multiple_switch`), mode
+values from its English strings (PIR_and_Motion, PIR_and_Person,
+PIR_and_Person_or_Vehicle). All event payloads other than idle are modelled.

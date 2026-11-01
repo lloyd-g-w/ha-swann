@@ -39,19 +39,45 @@ live view times out), polling interval (seconds), and *Also manage DDNS and clou
 
 ## Features
 
-One device for the NVR, plus one device per camera channel (linked via the NVR).
+One device for the NVR, plus one device per paired camera (linked via the
+NVR). Empty channel slots ("NotPaired") get no device; devices of cameras that
+are unpaired later are removed on the next reload.
 
 - **Camera** per channel, streamed from
   `rtsp://<user>:<pass>@<host>:554/rtsp/streaming?channel=NN&subtype=S`.
-- **Binary sensors** per channel: motion, person, vehicle.
-- **Switch** per channel: motion detection on/off.
-- **Switch** "Swann cloud" on the NVR (see below).
+- **Binary sensors** per channel: motion, person, vehicle; **Awake**
+  (diagnostic, see battery cameras below); **Floodlight** and **Siren**
+  (read-only, only on cameras that have them).
+- **Motion detection**, depending on firmware: a **switch** (on/off) where the
+  NVR has a boolean motion switch, or a **"Motion detection mode" select**
+  where it has a mode instead (NVW-MR4K: e.g. `PIR_and_Person_or_Vehicle`).
+  The select offers the modes the NVR lists; if it lists none, it only shows
+  the current mode. There is deliberately no "off" for those cameras.
+- **Switch** "Swann cloud" on the NVR (see below), and a diagnostic
+  **"Cloud connection"** sensor (the NVR's own cloud link state, e.g.
+  `Connected`) to check whether the cloud is really cut off.
+
+Controlling the floodlight and siren is not supported yet (planned, via
+`PreviewChannel/Floodlight2AudioAlarm`).
+
+### Battery cameras
+
+Battery Wi-Fi cameras (e.g. the NVW-MR4K kit) sleep between events and report
+`Sleep`; they count as available, and **Awake** shows whether one is awake
+right now. To save their batteries the integration never preloads streams, and
+camera snapshots are cached: at most one every 10 s while a camera is awake and
+one every 30 minutes while it sleeps (opening a snapshot or stream wakes it).
+Live view still wakes the camera on demand. Turn off *Preload stream* in the
+camera's settings if you enabled it.
 
 ## The "Swann cloud" switch
 
 *On* means the NVR's cloud features are allowed.
 
-**What it changes by default** (only on pages your NVR supports):
+**What it changes by default** (only on pages your NVR supports). On the
+NVW-MR4K (firmware V8.2.2) the P2P page does not exist; its web UI keeps the
+P2P switch on another settings page, which the integration does not touch yet,
+so there the switch mainly turns off push notifications and cloud storage.
 
 - **P2P** (`NetworkConfig/P2P`): the connection the Swann Security app uses.
   **Turning this off disables the Swann Security app away from home**, including
@@ -134,6 +160,14 @@ on your router.
   check, which cloud pages exist), with passwords, serials, MAC/IP addresses
   and IDs redacted. It works even if setup keeps failing. Attach it to an
   issue.
+- **Person/vehicle detection not working:** walk past a camera, then download
+  diagnostics. Its `recent_events` section holds the last 20 raw event entries
+  the NVR sent (with debug logging on, each change is also logged as
+  `Event/Check CHn: {...}`). Please attach it: these payloads have not been
+  verified on real firmware yet.
+- **Live view shows nothing:** many Swann cameras stream H.265, which most
+  browsers can't play over WebRTC. Try the Home Assistant app on iOS or Safari,
+  or use Frigate/go2rtc to convert it to H.264.
 - **Live view times out:** set *RTSP transport* to UDP in the options.
 
 ## Development

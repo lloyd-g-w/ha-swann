@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 import logging
@@ -51,6 +52,10 @@ class SwannData:
     channels: dict[int, Channel] = field(default_factory=dict)
     events: dict[int, ChannelEvents] = field(default_factory=dict)
     cloud: CloudSettings | None = None
+    # SystemInfo/Base agent_cloud_link_state, read with the cloud settings.
+    cloud_link: str | None = None
+    # Allowed AlarmConfig/Motion multiple_switch values per channel (0 = all).
+    motion_modes: dict[int, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -114,14 +119,25 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             else:
                 events = previous.events
             cloud = previous.cloud if previous else None
+            cloud_link = previous.cloud_link if previous else None
+            if previous is not None:
+                motion_modes = previous.motion_modes
+            elif any(ch.motion_mode is not None for ch in channels):
+                motion_modes = await self._async_optional(
+                    self.client.async_get_motion_modes(), {}, "Motion modes"
+                )
+            else:
+                motion_modes = {}
             if time.monotonic() >= self._cloud_next:
-                try:
-                    cloud = await self.client.async_get_cloud_settings()
-                except SwannSessionTakenError:
-                    raise
-                except (SwannApiError, SwannConnectionError) as err:
-                    # Cloud settings are optional: never fail the refresh.
-                    _LOGGER.warning("Cloud settings unavailable: %s", err)
+                # Cloud settings are optional: never fail the refresh.
+                cloud = await self._async_optional(
+                    self.client.async_get_cloud_settings(), cloud, "Cloud settings"
+                )
+                cloud_link = await self._async_optional(
+                    self.client.async_get_cloud_link_state(),
+                    cloud_link,
+                    "Cloud link state",
+                )
                 self._cloud_next = time.monotonic() + CLOUD_REFRESH_INTERVAL
         except SwannAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
@@ -131,7 +147,24 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             channels={ch.number: ch for ch in channels},
             events=events,
             cloud=cloud,
+            cloud_link=cloud_link,
+            motion_modes=motion_modes,
         )
+
+    async def _async_optional[T](self, call: Awaitable[T], default: T, what: str) -> T:
+        """Await an optional read; log and return ``default`` on NVR errors."""
+        try:
+            return await call
+        except SwannSessionTakenError:
+            raise
+        except (SwannApiError, SwannConnectionError) as err:
+            _LOGGER.warning("%s unavailable: %s", what, err)
+            return default
+
+    @property
+    def paired_channels(self) -> list[Channel]:
+        """Channels with a camera paired (empty slots get no entities)."""
+        return [ch for ch in self.data.channels.values() if ch.paired]
 
     @property
     def events_running(self) -> bool:

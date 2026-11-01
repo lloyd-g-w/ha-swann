@@ -18,6 +18,7 @@ from homeassistant.const import (
     STATE_ON,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -366,3 +367,175 @@ async def test_diagnostics_when_not_loaded(
     assert diag["raw"]["device_info"]["ok"] is True
     assert "coordinator" not in diag
     assert mock_nvr.logouts == 1  # temporary client closed
+
+
+# --- the user's real NVW-MR4K (battery Wi-Fi cameras) ------------------------
+
+
+def _real_event(**changes: dict) -> dict:
+    """The real idle Event/Check, with per-channel changes (CHn -> fields)."""
+    data = copy.deepcopy(fixture_data("real_mr4k_event_check_initial"))
+    data["sequence"] += 1
+    for alarm in data["alarm_list"][0]["channel_alarm"]:
+        alarm.update(changes.get(alarm["channel"], {}))
+    return data
+
+
+async def _setup_real(hass: HomeAssistant, mock_nvr: MockNVR, entry) -> None:
+    mock_nvr.use_real_mr4k()
+    await _setup(hass, entry)
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_real_mr4k_entities(
+    hass: HomeAssistant,
+    mock_nvr: MockNVR,
+    entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    states = {s.entity_id: s.state for s in hass.states.async_all()}
+    # Sleeping battery cameras are available; empty slots 5-8 get nothing.
+    assert states["camera.syd_driveway"] != "unavailable"
+    assert states["binary_sensor.sydney_door_motion"] == STATE_OFF
+    assert states["binary_sensor.syd_driveway_awake"] == STATE_OFF
+    assert not [e for e in states if "channel_5" in e or "channel_8" in e]
+    devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+    assert sorted(d.name for d in devices) == [
+        "Syd Driveway",
+        "Syd Garden",
+        "Syd Side Path",
+        "Sydney Door",
+        "Wetherill St",
+    ]
+    # Floodlight only where the camera has one; siren where it has AudioAlarm.
+    assert states["binary_sensor.syd_driveway_floodlight"] == STATE_OFF
+    assert "binary_sensor.sydney_door_floodlight" not in states
+    assert states["binary_sensor.sydney_door_siren"] == STATE_OFF
+    # No boolean motion switch on this firmware: a mode select instead.
+    assert "switch.syd_driveway_motion_detection" not in states
+    select = hass.states.get("select.syd_driveway_motion_detection_mode")
+    assert select.state == "PIR_and_Person_or_Vehicle"
+    assert select.attributes["options"] == [
+        "PIR_and_Motion",
+        "PIR_and_Person",
+        "PIR_and_Person_or_Vehicle",
+    ]
+    assert states["sensor.wetherill_st_cloud_connection"] == "Connected"
+    assert "via_device" not in caplog.text
+
+
+async def test_real_mr4k_motion_mode_select(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    before = copy.deepcopy(mock_nvr.page("AlarmConfig/Motion", "ChannelConfig"))
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {
+            ATTR_ENTITY_ID: "select.syd_garden_motion_detection_mode",
+            "option": "PIR_and_Motion",
+        },
+        blocking=True,
+    )
+    path, body = mock_nvr.sets[-1]
+    assert path == "AlarmConfig/Motion/Set"
+    assert body["channel_info"]["CH3"]["multiple_switch"] == "PIR_and_Motion"
+    # Only that key changed (region grid and other channels untouched).
+    body["channel_info"]["CH3"]["multiple_switch"] = "PIR_and_Person_or_Vehicle"
+    assert body["channel_info"] == before["channel_info"]
+    state = hass.states.get("select.syd_garden_motion_detection_mode")
+    assert state.state == "PIR_and_Motion"
+
+
+async def test_real_mr4k_motion_mode_read_only_without_range(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    mock_nvr.use_real_mr4k()
+    mock_nvr.ranges.clear()  # Range lists no modes
+    await _setup(hass, entry)
+    state = hass.states.get("select.syd_garden_motion_detection_mode")
+    assert state.attributes["options"] == ["PIR_and_Person_or_Vehicle"]
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            "select",
+            "select_option",
+            {
+                ATTR_ENTITY_ID: "select.syd_garden_motion_detection_mode",
+                "option": "Off",
+            },
+            blocking=True,
+        )
+    assert not mock_nvr.sets
+
+
+async def test_real_mr4k_live_events(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    online = {"camera_connect_status": {"connect_status": "Online"}}
+    mock_nvr.events = [
+        _real_event(
+            CH1={"motion_alarm": True, **online},
+            CH2={
+                "Floodlight_AudioAlarm": {
+                    "floodlight_switch": True,
+                    "audioAlarm_switch": True,
+                }
+            },
+            CH4={"camera_connect_status": {"connect_status": "Offline"}},
+        )
+    ]
+    await coordinator.async_poll_events()
+    await hass.async_block_till_done()
+    assert hass.states.get("binary_sensor.syd_driveway_motion").state == STATE_ON
+    assert hass.states.get("binary_sensor.syd_driveway_awake").state == STATE_ON
+    assert hass.states.get("binary_sensor.syd_side_path_floodlight").state == STATE_ON
+    assert hass.states.get("binary_sensor.syd_side_path_siren").state == STATE_ON
+    assert hass.states.get("camera.sydney_door").state == "unavailable"
+
+    mock_nvr.events = [_real_event()]
+    await coordinator.async_poll_events()
+    await hass.async_block_till_done()
+    assert hass.states.get("binary_sensor.syd_driveway_motion").state == STATE_OFF
+    assert hass.states.get("binary_sensor.syd_driveway_awake").state == STATE_OFF
+    assert hass.states.get("camera.sydney_door").state != "unavailable"
+
+
+async def test_real_mr4k_removes_unpaired_devices(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    registry = dr.async_get(hass)
+    stale = registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("swann", "stale-channel-5")},
+        name="Channel 5",
+    )
+    await _setup_real(hass, mock_nvr, entry)
+    assert registry.async_get(stale.id) is None
+
+
+async def test_real_mr4k_diagnostics_recent_events(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    await _setup_real(hass, mock_nvr, entry)
+    coordinator = entry.runtime_data.coordinator
+    mock_nvr.events = [
+        _real_event(CH1={"motion_alarm": True}),
+        _real_event(),
+    ]
+    await coordinator.async_poll_events()
+    await coordinator.async_poll_events()
+    diag = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    recent = diag["recent_events"]
+    assert [e["entry"]["motion_alarm"] for e in recent] == [True, False]
+    assert recent[0]["entry"]["channel"] == "CH1"
+    assert "Floodlight_AudioAlarm" in recent[0]["entry"]
+    assert "floodlight_value_range" not in json.dumps(recent)
+    assert diag["raw"]["motion_range"]["ok"]
+    assert diag["motion_modes"]["1"][0] == "PIR_and_Motion"
+    assert diag["cloud_link"] == "Connected"
+    for name in ("storage_cloud", "auto_upgrade", "netbase", "intelligent_pd"):
+        assert name in diag["raw"]
