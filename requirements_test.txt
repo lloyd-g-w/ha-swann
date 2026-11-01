@@ -7,3 +7,12 @@ av==19.0.0
 numpy==2.3.2
 ha-ffmpeg==3.2.2
 go2rtc-client==0.4.0
+# mobile_app and what it pulls in (conversation, intent, assist_pipeline, tts),
+# set up for real by the blueprint tests
+PyNaCl==1.6.2
+hassil==3.12.1
+home-assistant-intents==2026.10.6
+gazetteer-matcher==1.1.0
+mutagen==1.48.1
+pymicro-vad==1.0.1
+pyspeex-noise==1.0.2

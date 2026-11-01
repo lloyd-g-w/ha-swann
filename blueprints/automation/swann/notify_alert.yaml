@@ -125,7 +125,6 @@ variables:
     {% else %}
       {{ state_attr(camera, 'friendly_name') or camera }}
     {% endif %}
-  notify_service: "notify.mobile_app_{{ device_attr(notify_device, 'name') | slugify }}"
   urgent: "{{ type == 'doorbell' }}"
   cooldown: !input cooldown
   cooldown_seconds: >-
@@ -154,25 +153,28 @@ conditions:
             >= cooldown_seconds | float(0) }}
 
 actions:
-  - action: "{{ notify_service }}"
+  # The mobile_app device action finds the phone's notify target from the
+  # device itself, so renaming the phone in HA doesn't break delivery.
+  - domain: mobile_app
+    type: notify
+    device_id: !input notify_device
+    title: "{{ titles.get(type, type | capitalize) }}"
+    message: "{{ messages.get(type, type | capitalize ~ ' at the ' ~ name) }}"
     data:
-      title: "{{ titles.get(type, type | capitalize) }}"
-      message: "{{ messages.get(type, type | capitalize ~ ' at the ' ~ name) }}"
-      data:
-        image: "/api/camera_proxy/{{ camera }}"
-        # Tap opens the camera's dialog (iOS: url, Android: clickAction).
-        url: "entityId:{{ camera }}"
-        clickAction: "entityId:{{ camera }}"
-        # iOS: long-press shows the live camera.
-        entity_id: "{{ camera }}"
-        tag: "swann-{{ camera }}"
-        group: swann
-        channel: "{{ 'Swann doorbell' if urgent else 'Swann alerts' }}"
-        importance: "{{ 'high' if urgent else 'default' }}"
-        priority: "{{ 'high' if urgent else 'normal' }}"
-        ttl: "{{ 0 if urgent else 3600 }}"
-        push:
-          interruption-level: "{{ 'time-sensitive' if urgent else 'active' }}"
+      image: "/api/camera_proxy/{{ camera }}"
+      # Tap opens the camera's dialog (iOS: url, Android: clickAction).
+      url: "entityId:{{ camera }}"
+      clickAction: "entityId:{{ camera }}"
+      # iOS: long-press shows the live camera.
+      entity_id: "{{ camera }}"
+      tag: "swann-{{ camera }}"
+      group: swann
+      channel: "{{ 'Swann doorbell' if urgent else 'Swann alerts' }}"
+      importance: "{{ 'high' if urgent else 'default' }}"
+      priority: "{{ 'high' if urgent else 'normal' }}"
+      ttl: "{{ 0 if urgent else 3600 }}"
+      push:
+        interruption-level: "{{ 'time-sensitive' if urgent else 'active' }}"
   - if:
       - condition: template
         value_template: >-
