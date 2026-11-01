@@ -20,6 +20,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.swann import coordinator as coordinator_mod, helpers
+from custom_components.swann.api import SwannClient, SwannConnectionError
 from custom_components.swann.const import CONF_USE_HTTPS
 
 from .conftest import USER_INPUT
@@ -207,3 +208,40 @@ async def test_login_at_other_makes_entities_unavailable(
     assert not coordinator.last_update_success
     assert "dedicated NVR user" in str(coordinator.last_exception)
     assert hass.states.get("camera.driveway").state == "unavailable"
+
+
+async def test_setup_survives_cloud_page_hanging_up(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    # Seen on an NVW-MR4K: StorageConfig/Cloud/Range drops the connection.
+    mock_nvr.drop["StorageConfig/Cloud/Range"] = -1
+    await _setup(hass, entry)
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("camera.driveway") is not None
+    assert hass.states.get(CLOUD_SWITCH).state == STATE_ON
+
+
+async def test_setup_survives_every_cloud_page_hanging_up(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    for page in ("NetworkConfig/P2P", "StorageConfig/Cloud", "Maintenance/AutoUpgrade"):
+        mock_nvr.drop[f"{page}/Range"] = -1
+    for path in [p for p, _ in mock_nvr.pages if p.startswith("AlarmConfig/")]:
+        mock_nvr.drop[f"{path}/Range"] = -1
+    await _setup(hass, entry)
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("binary_sensor.driveway_motion") is not None
+
+
+async def test_setup_survives_cloud_settings_failing(
+    hass: HomeAssistant, mock_nvr: MockNVR, entry: MockConfigEntry
+) -> None:
+    with patch.object(
+        SwannClient,
+        "async_get_cloud_settings",
+        side_effect=SwannConnectionError("Error calling /API/X/Range: boom"),
+    ):
+        await _setup(hass, entry)
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("camera.driveway") is not None
+    assert hass.states.get(CLOUD_SWITCH).state == "unavailable"

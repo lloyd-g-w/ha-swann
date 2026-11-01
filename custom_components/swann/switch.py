@@ -94,6 +94,11 @@ class SwannCloudSwitch(SwannEntity, SwitchEntity):
         self._store = store
 
     @property
+    def available(self) -> bool:
+        """Unavailable until the NVR's cloud settings could be read."""
+        return super().available and self.coordinator.data.cloud is not None
+
+    @property
     def is_on(self) -> bool | None:
         """Return True if any cloud feature is enabled on the NVR."""
         cloud = self.coordinator.data.cloud

@@ -206,6 +206,23 @@ async def test_device_info(client: SwannClient) -> None:
     assert info.channel_count == 8
 
 
+async def test_dropped_connection_retried_once(
+    client: SwannClient, mock: MockNVR
+) -> None:
+    mock.drop["Login/DeviceInfo/Get"] = 1
+    info = await client.async_get_device_info()
+    assert info.model == "NVW-MR4K"
+    assert [p for p, _ in mock.requests].count("Login/DeviceInfo/Get") == 2
+
+
+async def test_dropped_connection_twice_is_an_error(
+    client: SwannClient, mock: MockNVR
+) -> None:
+    mock.drop["Login/DeviceInfo/Get"] = 2
+    with pytest.raises(SwannConnectionError, match="Login/DeviceInfo"):
+        await client.async_get_device_info()
+
+
 async def test_device_info_without_systeminfo(
     client: SwannClient, mock: MockNVR
 ) -> None:
@@ -456,6 +473,30 @@ async def test_cloud_partial_support(client: SwannClient, mock: MockNVR) -> None
         p.startswith(("StorageConfig/Cloud", "NetworkConfig/DDNS"))
         for p, _ in mock.sets
     )
+
+
+async def test_cloud_page_that_hangs_up_is_skipped(
+    client: SwannClient, mock: MockNVR
+) -> None:
+    # Seen on an NVW-MR4K: StorageConfig/Cloud/Range drops the connection.
+    mock.drop["StorageConfig/Cloud/Range"] = -1
+    settings = await client.async_get_cloud_settings()
+    assert not any(k.startswith("StorageConfig/Cloud") for k in settings.features)
+    assert "NetworkConfig/P2P|p2p_switch" in settings.features
+    # Not remembered as unsupported: probed again next time, and used once
+    # the NVR answers.
+    del mock.drop["StorageConfig/Cloud/Range"]
+    settings = await client.async_get_cloud_settings()
+    assert any(k.startswith("StorageConfig/Cloud") for k in settings.features)
+
+
+async def test_cloud_page_get_that_hangs_up_is_skipped(
+    client: SwannClient, mock: MockNVR
+) -> None:
+    mock.drop["StorageConfig/Cloud/Get"] = -1
+    settings = await client.async_get_cloud_settings()
+    assert not any(k.startswith("StorageConfig/Cloud") for k in settings.features)
+    assert "NetworkConfig/P2P|p2p_switch" in settings.features
 
 
 async def test_cloud_restore_skips_vanished_page(

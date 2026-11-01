@@ -59,6 +59,9 @@ class MockNVR:
         self.logouts = 0
         self.login_error: tuple[str, int, dict] | None = None
         self.next_error: dict[str, tuple[str, int]] = {}
+        # path -> how many more requests to it get their connection dropped
+        # (-1: always), like firmware that hangs up instead of answering.
+        self.drop: dict[str, int] = {}
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self.sets: list[tuple[str, dict[str, Any]]] = []
         self.events: list[dict[str, Any] | tuple[str, int]] = []
@@ -150,6 +153,12 @@ class MockNVR:
             body = {}
         data = body.get("data") or {}
         self.requests.append((path, data))
+
+        if self.drop.get(path):
+            if self.drop[path] > 0:
+                self.drop[path] -= 1
+            request.transport.close()
+            return web.Response()
 
         if path in self.next_error:
             code, status = self.next_error.pop(path)

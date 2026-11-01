@@ -24,6 +24,7 @@ from .api import (
     SwannAuthError,
     SwannClient,
     SwannConnectionError,
+    SwannSessionTakenError,
 )
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
@@ -109,8 +110,11 @@ class SwannCoordinator(DataUpdateCoordinator[SwannData]):
             if time.monotonic() >= self._cloud_next:
                 try:
                     cloud = await self.client.async_get_cloud_settings()
-                except SwannApiError as err:
-                    _LOGGER.debug("Cloud settings unavailable: %s", err)
+                except SwannSessionTakenError:
+                    raise
+                except (SwannApiError, SwannConnectionError) as err:
+                    # Cloud settings are optional: never fail the refresh.
+                    _LOGGER.warning("Cloud settings unavailable: %s", err)
                 self._cloud_next = time.monotonic() + CLOUD_REFRESH_INTERVAL
         except SwannAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err

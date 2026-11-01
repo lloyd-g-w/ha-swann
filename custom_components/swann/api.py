@@ -517,29 +517,44 @@ class SwannClient:
         *,
         request_timeout: float = REQUEST_TIMEOUT,
     ) -> dict[str, Any]:
-        """POST to the API once with the current session; return ``data``."""
+        """POST to the API with the current session; return ``data``.
+
+        The NVR drops idle keep-alive connections without telling us, so a
+        request on a reused connection can fail with a disconnect: retry such
+        a request once on a fresh connection (every call we make is safe to
+        repeat).
+        """
         headers = {"Accept": "application/json"}
         if self._token:
             headers["X-csrftoken"] = self._token
-        try:
-            async with self._session.post(
-                self.base_url + path,
-                json={"version": "1.0", "data": data or {}},
-                headers=headers,
-                ssl=self._ssl(),
-                timeout=aiohttp.ClientTimeout(total=request_timeout),
-            ) as resp:
-                try:
-                    payload = await resp.json(content_type=None)
-                except ValueError:
-                    payload = None
-                status = resp.status
-                if status == 200:
-                    self._store_token(resp)
-        except TimeoutError as err:
-            raise SwannConnectionError(f"Timeout calling {path}") from err
-        except aiohttp.ClientError as err:
-            raise SwannConnectionError(f"Error calling {path}: {err}") from err
+        for attempt in (1, 2):
+            try:
+                async with self._session.post(
+                    self.base_url + path,
+                    json={"version": "1.0", "data": data or {}},
+                    headers=headers,
+                    ssl=self._ssl(),
+                    timeout=aiohttp.ClientTimeout(total=request_timeout),
+                ) as resp:
+                    try:
+                        payload = await resp.json(content_type=None)
+                    except ValueError:
+                        payload = None
+                    status = resp.status
+                    if status == 200:
+                        self._store_token(resp)
+                break
+            except TimeoutError as err:
+                raise SwannConnectionError(f"Timeout calling {path}") from err
+            except (
+                aiohttp.ServerDisconnectedError,
+                aiohttp.ClientOSError,
+            ) as err:
+                if attempt == 2:
+                    raise SwannConnectionError(f"Error calling {path}: {err}") from err
+                _LOGGER.debug("%s: %s; retrying on a new connection", path, err)
+            except aiohttp.ClientError as err:
+                raise SwannConnectionError(f"Error calling {path}: {err}") from err
 
         code = _error_code(payload)
         if status == 200 and code is None:
@@ -861,7 +876,12 @@ class SwannClient:
     # --- cloud settings (research/API.md 4) -----------------------------------
 
     async def _async_page_supported(self, page: str, page_type: str | None) -> bool:
-        """Probe ``<page>/Range`` once; unsupported pages are skipped."""
+        """Probe ``<page>/Range`` once; unsupported pages are skipped.
+
+        Some firmware drops the connection for pages it lacks instead of
+        answering with an error: skip the page this time, but don't remember
+        it as unsupported, since the failure may also have been transient.
+        """
         if page not in self._page_support:
             body = {"page_type": page_type} if page_type else {}
             try:
@@ -869,6 +889,11 @@ class SwannClient:
             except SwannApiError as err:
                 _LOGGER.debug("%s not supported: %s", page, err)
                 self._page_support[page] = False
+            except SwannSessionTakenError:
+                raise
+            except SwannConnectionError as err:
+                _LOGGER.debug("Skipping %s: %s", page, err)
+                return False
             else:
                 self._page_support[page] = True
         return self._page_support[page]
@@ -892,7 +917,9 @@ class SwannClient:
                 continue
             try:
                 data = await self._async_get_page(page, page_type)
-            except SwannApiError as err:
+            except SwannSessionTakenError:
+                raise
+            except (SwannApiError, SwannConnectionError) as err:
                 _LOGGER.debug("Reading %s failed: %s", page, err)
                 continue
             found = _extract_cloud_flags(page, data)
