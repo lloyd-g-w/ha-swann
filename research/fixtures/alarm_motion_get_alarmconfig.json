@@ -1,0 +1,9 @@
+{"result":"success","data":{"page_type":"AlarmConfig","channel_info":{
+"CH1":{"copy_ch":"0","record_enable":true,"record_channel":["CH1"],"post_recording":"30s","buzzer":"Off","latch_time":"10s","show_message":true,"full_screen":false,"send_email":false,"push":true,"picture_to_cloud":true,"video_to_cloud":true,"ftp_picture_upload":false,"ftp_video_upload":false,"light_linkage":false,"siren_linkage":false,"http_listening":false,"alarm_out":[]}
+,
+"CH2":{"copy_ch":"0","record_enable":true,"record_channel":["CH2"],"post_recording":"30s","buzzer":"Off","latch_time":"10s","show_message":true,"full_screen":false,"send_email":false,"push":true,"picture_to_cloud":true,"video_to_cloud":true,"ftp_picture_upload":false,"ftp_video_upload":false,"light_linkage":false,"siren_linkage":false,"http_listening":false,"alarm_out":[]}
+,
+"CH3":{"copy_ch":"0","record_enable":true,"record_channel":["CH3"],"post_recording":"30s","buzzer":"Off","latch_time":"10s","show_message":true,"full_screen":false,"send_email":false,"push":true,"picture_to_cloud":false,"video_to_cloud":false,"ftp_picture_upload":false,"ftp_video_upload":false,"light_linkage":false,"siren_linkage":false,"http_listening":false,"alarm_out":[]}
+,
+"CH4":{"copy_ch":"0","record_enable":true,"record_channel":["CH4"],"post_recording":"30s","buzzer":"Off","latch_time":"10s","show_message":true,"full_screen":false,"send_email":false,"push":false,"picture_to_cloud":false,"video_to_cloud":false,"ftp_picture_upload":false,"ftp_video_upload":false,"light_linkage":false,"siren_linkage":false,"http_listening":false,"alarm_out":[]}
+}}}

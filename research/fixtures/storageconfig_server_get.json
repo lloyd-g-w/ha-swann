@@ -1,0 +1,1 @@
+{"result":"success","data":{"enc_mode":"Swann Cloud","ftp_info":{"enable":false,"server":"","port":21,"username":"","password_empty":true},"sftp_info":{"enable":false,"server":"","port":22,"username":"","password_empty":true},"aws_info":{"enable":false},"dropbox_info":{"enable":false},"google_drive_info":{"enable":false},"swann_cloud_info":{"enable":true}}}

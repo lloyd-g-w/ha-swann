@@ -1,0 +1,5 @@
+{"result":"success","data":{"reader_id":3,"sequence":117,"lap_number":0,"alarm_list":[{"time":"2026-11-01 16:30:00","channel_alarm":[
+ {"channel":"CH1","camera_connect_status":{"connect_status":"Online"},"motion_alarm":false,"int_alarm":{"alarm_val":false},"videoloss":false,"record_flag":{"h":"","i":"","m":"","s":"","p":"","r":"R","t":""}},
+ {"channel":"CH2","camera_connect_status":{"connect_status":"Online"},"motion_alarm":false,"int_alarm":{"alarm_val":false},"videoloss":false},
+ {"channel":"CH3","camera_connect_status":{"connect_status":"Online"},"motion_alarm":false,"videoloss":false},
+ {"channel":"CH4","camera_connect_status":{"connect_status":"Offline"},"videoloss":true}]}]}}

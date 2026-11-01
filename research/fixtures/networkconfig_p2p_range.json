@@ -1,0 +1,1 @@
+{"result":"success","data":{"p2p_switch":{"type":"bool"},"p2p_id":{"type":"string","mode":"r"},"app_url_android":{"type":"string","mode":"r"},"app_url_ios":{"type":"string","mode":"r"}}}

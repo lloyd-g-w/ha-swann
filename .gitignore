@@ -7,3 +7,8 @@ __pycache__/
 htmlcov/
 result
 .direnv/
+
+# Downloaded NVR web UI and cloned third-party repos (not ours to publish)
+research/webui-js/
+research/raysharp-ha/
+research/raysharp-docs/

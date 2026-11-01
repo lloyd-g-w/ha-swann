@@ -10,7 +10,7 @@ no Swann cloud account is involved.
 
 ## Installation (HACS)
 
-1. HACS → ⋮ → *Custom repositories* → add this repository's URL, category
+1. HACS → ⋮ → *Custom repositories* → add `https://github.com/lloyd-g-w/ha-swann`, category
    *Integration*.
 2. Install **Swann NVR**, then restart Home Assistant.
 

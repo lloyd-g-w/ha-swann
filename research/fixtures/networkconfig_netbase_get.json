@@ -1,0 +1,1 @@
+{"result":"success","data":{"page_type":"NetBase","port":{"web_port":80,"https_port":443,"client_port":9000,"rtsp_port":554},"p2p_switch":true,"APR_switch":false}}
